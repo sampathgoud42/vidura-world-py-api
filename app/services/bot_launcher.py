@@ -54,6 +54,19 @@ def main() -> None:
     # Make sibling modules importable exactly like a direct launch would.
     sys.path.insert(0, str(script_dir))
 
+    # Honor the btc15-family contract "CWD supplies credentials": the legacy
+    # modules call bare load_dotenv(), whose frame-based walk-up starts at
+    # the SCRIPT dir and never reaches the customer folder we chdir'd into.
+    # Preload it here; the modules' later override=False loads won't clobber.
+    cwd_env = Path.cwd() / ".env"
+    if cwd_env.is_file():
+        try:
+            from dotenv import load_dotenv
+
+            load_dotenv(cwd_env, override=True)
+        except ImportError:
+            pass
+
     # Locate the btc15 dir relative to the target (works for btc15, btc60 and
     # sports scripts, which all live under prediction-trade/kalshi/...).
     for ancestor in [script_dir, *script_dir.parents]:

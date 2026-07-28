@@ -260,18 +260,28 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
     for path, tag in _candidate_files(user, bot_key):
         rows = _read_rows(path)
         file_ins = file_upd = 0
-        seen: dict[str, int] = {}
+        # Pre-merge rows sharing an external_id: the legacy close-fallback
+        # appends a sparse duplicate CLOSED row (pnl 0.0) for a trade it
+        # could not match — same trade, artifact row. Meaningful-value-wins.
+        merged: dict[str, dict] = {}
         for row in rows:
             mapped = _map_row(tag, row)
             if mapped is None:
                 continue
-            # Row order in the bot CSVs is stable (in-place updates, appends
-            # at the end), so an occurrence index disambiguates real
-            # duplicate keys deterministically across re-syncs.
-            base_id = mapped["external_id"]
-            n = seen[base_id] = seen.get(base_id, 0) + 1
-            if n > 1:
-                mapped["external_id"] = f"{base_id}#{n}"
+            key = mapped["external_id"]
+            kept = merged.get(key)
+            if kept is None:
+                merged[key] = mapped
+                continue
+            for field, value in mapped.items():
+                if value is None:
+                    continue
+                if field == "pnl_usd" and value == 0 and kept.get("pnl_usd"):
+                    continue  # sparse row must not zero out a real P&L
+                if field == "status" and value in ("closed", "open") and kept.get("status") in ("won", "lost"):
+                    continue  # never downgrade a settled outcome
+                kept[field] = value
+        for mapped in merged.values():
             existing = db.scalar(
                 select(Trade).where(
                     Trade.user_id == user.user_id,
@@ -292,9 +302,15 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
                 changed = False
                 for field in ("status", "pnl_usd", "closed_at", "price_cents", "cost_usd", "raw"):
                     new = mapped.get(field)
-                    if new is not None and getattr(existing, field) != new:
-                        setattr(existing, field, new)
-                        changed = True
+                    if new is None or getattr(existing, field) == new:
+                        continue
+                    # Same sparse-row guards as the in-file merge above.
+                    if field == "pnl_usd" and new == 0 and existing.pnl_usd:
+                        continue
+                    if field == "status" and new in ("closed", "open") and existing.status in ("won", "lost"):
+                        continue
+                    setattr(existing, field, new)
+                    changed = True
                 if changed:
                     file_upd += 1
         db.commit()

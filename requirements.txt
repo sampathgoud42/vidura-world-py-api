@@ -11,6 +11,11 @@ python-dotenv
 psutil
 tzdata
 
+# runtime deps of the wrapped legacy bots (they run on this venv's python)
+aiohttp
+numpy
+pandas
+
 # dev / test
 pytest>=8
 httpx>=0.27

@@ -107,3 +107,40 @@ def test_aware_datetime_normalized_to_utc(client, user):
 
 def test_wellness_options_404_for_unknown_user(client):
     assert client.get("/api/v1/users/nope/wellness/options").status_code == 404
+
+
+def test_sparse_duplicate_close_row_merges_not_clobbers(client, user, user_folder):
+    """The legacy close-fallback appends a sparse CLOSED row (pnl 0.0) with
+    the SAME ts_epoch+ticker as the real settled row. It must merge away,
+    not zero the real loss or double-count the trade."""
+    header = (
+        "ts_epoch,ts,ticker,player,situation,confidence,reason,set_num,"
+        "signal_bid,buy_price,fill_price,contracts,tp_price,pv_entry,status,"
+        "ts_close,pv_close,realized_pnl,pv_delta_pct"
+    )
+    real_row = (
+        "1783725972.479,2026-07-10 15:26:12 CST,KXWTAMATCH-DUP,Player B,"
+        "E,high,test,2,52,57,54,50,68,378.25,CLOSED,2026-07-10 16:00:00,365.65,-12.60,-3.33"
+    )
+    sparse_row = (
+        "1783725972.479,2026-07-10 16:00:01 CST,KXWTAMATCH-DUP,Player B,"
+        "E,high,close-fallback,2,,,,,,,CLOSED,,,0.0,"
+    )
+    (user_folder / "trade_history" / "trade_history_sports.csv").write_text(
+        f"{header}\n{real_row}\n{sparse_row}\n"
+    )
+    uid = user["user_id"]
+    r = client.post("/api/v1/bots/sports/sync-trades", params={"user_id": uid})
+    assert r.json()["inserted"] == 1  # one trade, not two
+
+    r = client.get("/api/v1/bots/sports/trades", params={"user_id": uid})
+    assert r.json()["total"] == 1
+    item = r.json()["items"][0]
+    assert item["status"] == "lost"
+    assert item["pnl_usd"] == -12.60
+
+    # idempotent on re-sync
+    r = client.post("/api/v1/bots/sports/sync-trades", params={"user_id": uid})
+    assert r.json()["inserted"] == 0
+    r = client.get("/api/v1/bots/sports/trades", params={"user_id": uid})
+    assert r.json()["items"][0]["pnl_usd"] == -12.60
