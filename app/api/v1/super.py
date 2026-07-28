@@ -130,13 +130,17 @@ def sync_all(
     include_archive: bool = Query(default=True),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Ingest the central signal ledgers and gex/econ snapshots into SQLite
-    (local file reads only). Serialized: concurrent syncs would race the
-    unique indexes."""
-    with svc._SYNC_LOCK:
-        signals = svc.sync_signals(db, include_archive=include_archive)
-        snapshots = svc.sync_snapshots(db)
-    return {"signals": signals, "snapshots": snapshots}
+    """Full forced ingest of every signal source (central ledgers, worker
+    CSVs, gex/econ snapshots) into SQLite. The background auto-sync loop
+    runs the same pass continuously; this endpoint forces one now."""
+    return svc.sync_everything(db, include_archive=include_archive, force=True)
+
+
+@router.get("/sync/status", operation_id="getSuperSyncStatus")
+def sync_status() -> dict:
+    """Health of the background ingest loop that guarantees every generated
+    signal lands in the database."""
+    return svc.AUTO_SYNC_STATUS
 
 
 @router.get("/signals", operation_id="getSuperSignals", response_model=SuperSignalPage)

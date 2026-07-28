@@ -19,6 +19,9 @@ def test_api_key_guard_blocks_and_admits(client, user_folder):
         assert r.status_code == 200
         # health + docs stay open
         assert client.get("/health").status_code == 200
+        # the header-less SuperSite poll stays open; mutating compat POSTs don't
+        assert client.get("/api/super/state").status_code == 200
+        assert client.post("/api/super/on").status_code == 401
     finally:
         settings.api_key = ""
 

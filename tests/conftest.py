@@ -15,6 +15,9 @@ os.environ.setdefault("VIDURA_DATABASE_PATH", str(_TMP / "test_app.db"))
 os.environ.setdefault("VIDURA_VAR_DIR", str(_TMP / "var"))
 # Tests build user folders under pytest tmp paths, outside customers_root.
 os.environ.setdefault("VIDURA_ALLOW_ANY_ROOT", "true")
+# Keep tests hermetic: no background loop ingesting the real super_research
+# tree into the test database.
+os.environ.setdefault("VIDURA_SUPER_AUTO_SYNC", "false")
 
 import pytest
 from fastapi.testclient import TestClient

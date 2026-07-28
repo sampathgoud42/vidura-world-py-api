@@ -234,23 +234,52 @@ def test_sync_and_query_signals(client, super_dir):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["signals"]["inserted"] == 4  # 2 A + 1 B + 1 archive A
+    assert body["workers"]["inserted"] == 2  # spy worker CSV rows
     assert body["snapshots"]["upserted"] == 3  # gex + econ + gex_raw_spy
 
     page = client.get("/api/v1/super/signals", params={"book": "a"}).json()
-    assert page["total"] == 3
+    assert page["total"] == 4  # 3 central A + 1 worker A row
     assert page["items"][0]["ticker"] == "GLD"
     assert page["items"][0]["grade"] == "4"
     assert page["items"][0]["raw"]["outcome"] == "stop"
 
     hot = client.get("/api/v1/super/signals", params={"grade_min": 4}).json()
-    assert hot["total"] == 2  # eng_hot 4 + legacy 5
+    assert hot["total"] == 2  # eng_hot 4 + legacy 5; ungraded worker rows excluded
 
-    # idempotent
+    # idempotent across every source
     again = client.post("/api/v1/super/sync").json()
     assert again["signals"]["inserted"] == 0
+    assert again["workers"]["inserted"] == 0
 
     snaps = client.get("/api/v1/super/snapshots", params={"kind": "gex"}).json()
     assert len(snaps) == 1 and snaps[0]["snapshot_date"] == "2026-07-27"
+
+
+def test_worker_rows_persisted_with_identity(client, super_dir):
+    client.post("/api/v1/super/sync")
+    page = client.get("/api/v1/super/signals", params={"ticker": "SPY"}).json()
+    assert page["total"] == 3  # 1 central ledger row + 2 worker rows
+    worker_rows = [i for i in page["items"] if i["raw"].get("engine")]
+    assert {i["raw"]["engine"] for i in worker_rows} == {"4h", "1h"}
+    assert all(i["category"] == "etf" and i["grade"] is None for i in worker_rows)
+
+    # appending a new worker row is picked up incrementally (force pass)
+    csv_path = super_dir / "spy_research" / "spy_intraday_signals.csv"
+    with csv_path.open("a") as fh:
+        fh.write(
+            "2026-07-27 11:35:26,A,2h,5m,new_sig,LONG,1,am_0845_1130,0.0,0.8,75.0,"
+            "80.0,4,2026-07-27 11:30,739.00,739.00,740.85,737.15,13:35,13:35,742.05,"
+            "738.0,739.96,1.003,702388,1.30\n"
+        )
+    body = client.post("/api/v1/super/sync").json()
+    assert body["workers"]["inserted"] == 1
+
+
+def test_sync_status_endpoint(client, super_dir):
+    status = client.get("/api/v1/super/sync/status").json()
+    # background loop is disabled in tests; the shape is what matters
+    assert status["enabled"] is False
+    assert set(status) >= {"runs", "errors", "last_run_at", "last_result"}
 
 
 def test_supervisor_start_stop_logic_mocked(client, super_dir, monkeypatch):

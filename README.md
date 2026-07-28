@@ -119,9 +119,16 @@ econ + GEX blobs; `?all=1` merges the archive ledgers),
 `POST /super/on` / `POST /super/off` (start/stop category supervisors;
 detached processes that survive API restarts), `GET/POST /super/config`
 (ticker enable toggles), `GET /super/gex`, `GET /super/econ`,
-`POST /super/econ/refresh`, `POST /super/sync` (ledgers + snapshots into
-SQLite), `GET /super/signals` (filter by book/category/ticker/grade/days),
+`POST /super/econ/refresh`, `POST /super/sync` (forced full ingest),
+`GET /super/sync/status` (background-loop health),
+`GET /super/signals` (filter by book/category/ticker/grade/days),
 `GET /super/snapshots?kind=gex|econ|gex_raw_spy` (daily history).
+A background loop (on by default: `VIDURA_SUPER_AUTO_SYNC`, every
+`VIDURA_SUPER_SYNC_INTERVAL=60` seconds) continuously mirrors **every**
+generated signal — central A/B ledgers, archives, and all per-ticker
+worker CSVs — plus the daily gex/econ snapshots into SQLite, skipping
+unchanged files, so the database is the durable record without any
+manual sync.
 Legacy-compatible aliases at `/api/super/state|on|config` serve the exact
 vite-middleware shapes, so the existing frontend can point straight here.
 

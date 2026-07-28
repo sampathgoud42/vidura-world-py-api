@@ -38,6 +38,12 @@ class Settings(BaseSettings):
         "C:/Users/sampa/AppData/Local/Python/pythoncore-3.14-64/python.exe"
     )
 
+    # Background ingest: continuously mirror every signal the super_research
+    # service generates (central ledgers + per-ticker worker CSVs + gex/econ
+    # snapshots) into SQLite. Interval matches the supervisors' 60s poll.
+    super_auto_sync: bool = True
+    super_sync_interval: int = 60
+
     @property
     def super_dir(self) -> Path:
         return self.source_repo / "super_research"

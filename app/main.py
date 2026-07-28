@@ -11,8 +11,10 @@ Interactive docs:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,10 +27,63 @@ from app.core.database import init_db
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
 
+def _run_super_sync() -> dict:
+    """One forced-off (incremental) ingest pass in a worker thread."""
+    from app.core.database import SessionLocal
+    from app.services import super_research as svc
+
+    db = SessionLocal()
+    try:
+        return svc.sync_everything(db, include_archive=True, force=False)
+    finally:
+        db.close()
+
+
+async def _super_sync_loop(interval: int) -> None:
+    """Continuously mirror every super_research signal into SQLite so the
+    DB is the durable record even if nobody ever calls /super/sync."""
+    from app.services import super_research as svc
+
+    log = logging.getLogger("app.super_sync")
+    svc.AUTO_SYNC_STATUS.update(enabled=True, interval_s=interval)
+    await asyncio.sleep(5)  # let startup settle before the first pass
+    while True:
+        try:
+            result = await asyncio.to_thread(_run_super_sync)
+            svc.AUTO_SYNC_STATUS.update(
+                runs=svc.AUTO_SYNC_STATUS["runs"] + 1,
+                last_run_at=datetime.now(timezone.utc).isoformat(),
+                last_result=result,
+            )
+            new = (result.get("signals", {}).get("inserted", 0) or 0) + (
+                result.get("workers", {}).get("inserted", 0) or 0
+            )
+            if new:
+                log.info("auto-sync stored %s new signal(s)", new)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # keep the loop alive on any single failure
+            svc.AUTO_SYNC_STATUS.update(
+                errors=svc.AUTO_SYNC_STATUS["errors"] + 1, last_error=str(exc)
+            )
+            log.warning("auto-sync pass failed: %s", exc)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    settings = get_settings()
+    sync_task: asyncio.Task | None = None
+    if settings.super_auto_sync and settings.super_dir.is_dir():
+        sync_task = asyncio.create_task(_super_sync_loop(settings.super_sync_interval))
     yield
+    if sync_task is not None:
+        sync_task.cancel()
+        try:
+            await sync_task
+        except asyncio.CancelledError:
+            pass
 
 
 def create_app() -> FastAPI:
@@ -58,7 +113,13 @@ def create_app() -> FastAPI:
         # Shared-key gate (VIDURA_API_KEY). Docs and health stay open so the
         # Swagger UI can be browsed; every /api route requires the header.
         expected = get_settings().api_key
-        if expected and request.url.path.startswith("/api"):
+        # GET /api/super/state stays open even when keyed: it is the legacy
+        # read-only surface the unmodified SuperSite frontend polls without
+        # headers. The mutating compat POSTs (/on, /config) remain gated.
+        is_open_compat = (
+            request.method == "GET" and request.url.path == "/api/super/state"
+        )
+        if expected and request.url.path.startswith("/api") and not is_open_compat:
             import hmac as _hmac
 
             provided = request.headers.get("X-API-Key", "")

@@ -56,6 +56,34 @@ _SCAN_CACHE: dict = {"ts": 0.0, "running": {}}
 _ON_LOCK = threading.Lock()
 _SYNC_LOCK = threading.Lock()
 
+# (mtime, size) per ingested file so the background loop skips unchanged
+# files instead of re-upserting thousands of rows every minute.
+_FILE_STATE: dict[str, tuple[float, int]] = {}
+
+# Telemetry for the background loop, served by GET /super/sync/status.
+AUTO_SYNC_STATUS: dict = {
+    "enabled": False,
+    "interval_s": None,
+    "runs": 0,
+    "errors": 0,
+    "last_run_at": None,
+    "last_error": None,
+    "last_result": None,
+}
+
+
+def _file_changed(path: Path, *, force: bool) -> bool:
+    """True if the file should be (re)ingested; records the new state."""
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    state = (stat.st_mtime, stat.st_size)
+    if not force and _FILE_STATE.get(str(path)) == state:
+        return False
+    _FILE_STATE[str(path)] = state
+    return True
+
 
 # --- config file -----------------------------------------------------------
 
@@ -76,7 +104,14 @@ def write_enabled(enabled: dict[str, bool]) -> dict:
         for t in cat.get("tickers") or []:
             if t.get("id") in enabled:
                 t["enabled"] = bool(enabled[t["id"]])
-    config_path().write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+    # Byte-compatible with vite's JSON.stringify(cfg, null, 2) + '\n':
+    # literal UTF-8 (no \uXXXX escapes in the hand-maintained rules text)
+    # and LF line endings even on Windows.
+    config_path().write_text(
+        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     _SCAN_CACHE["ts"] = 0.0  # force fresh liveness on next state
     return cfg
 
@@ -366,11 +401,12 @@ def _float_or_none(value) -> float | None:
         return None
 
 
-def sync_signals(db: Session, *, include_archive: bool = True) -> dict:
+def sync_signals(db: Session, *, include_archive: bool = True, force: bool = True) -> dict:
     """Ingest central A/B ledgers (+ archive) into the super_signals table.
 
     Ledger rows are updated in place when outcomes resolve, so this upserts
-    on a stable external_id and refreshes outcome-bearing fields.
+    on a stable external_id and refreshes outcome-bearing fields. With
+    ``force=False`` files whose mtime+size are unchanged are skipped.
     """
     settings = get_settings()
     files = [
@@ -385,7 +421,7 @@ def sync_signals(db: Session, *, include_archive: bool = True) -> dict:
     inserted = updated = 0
     report: dict[str, dict] = {}
     for path, book in files:
-        if not path.is_file():
+        if not path.is_file() or not _file_changed(path, force=force):
             continue
         rows = _read_csv_rows(path)
         file_ins = file_upd = 0
@@ -440,6 +476,83 @@ def sync_signals(db: Session, *, include_archive: bool = True) -> dict:
         updated += file_upd
         report[str(path)] = {"rows": len(rows), "inserted": file_ins, "updated": file_upd}
     return {"inserted": inserted, "updated": updated, "files": report}
+
+
+def sync_worker_signals(db: Session, *, force: bool = True) -> dict:
+    """Ingest every per-ticker worker CSV (the raw engine signals) so ALL
+    signals the service generates are stored, not just the merged central
+    ledgers. Worker CSVs are append-only, so this pass is insert-only with
+    a preloaded id set — cheap enough to run every minute.
+    """
+    settings = get_settings()
+    try:
+        cfg = read_config()
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {"inserted": 0, "files": {}, "error": "config unreadable"}
+    inserted = 0
+    report: dict[str, dict] = {}
+    for cat_key, cat in (cfg.get("categories") or {}).items():
+        for t in cat.get("tickers") or []:
+            tid = t.get("id") or ""
+            path = settings.super_dir / (t.get("path") or "") / (t.get("csv") or "")
+            if not tid or not path.is_file() or not _file_changed(path, force=force):
+                continue
+            rows = _read_csv_rows(path)
+            existing_ids = set(
+                db.scalars(
+                    select(SuperSignal.external_id).where(
+                        SuperSignal.external_id.like(f"worker:{tid}:%")
+                    )
+                ).all()
+            )
+            file_ins = 0
+            for row in rows:
+                logged = (row.get("logged_at_cst") or "").strip()
+                if not logged:
+                    continue
+                # engine/tf are absent in the legacy BTC worker header — the
+                # empty strings still yield a stable, unique identity.
+                external_id = (
+                    f"worker:{tid}:{logged}:{(row.get('bar_time_cst') or '').strip()}:"
+                    f"{(row.get('engine') or '').strip()}:{(row.get('tf') or '').strip()}:"
+                    f"{(row.get('signal') or '')[:80]}"
+                )
+                if external_id in existing_ids:
+                    continue
+                existing_ids.add(external_id)
+                db.add(
+                    SuperSignal(
+                        external_id=external_id,
+                        book=(row.get("book") or "").strip() or None,
+                        category=cat_key,
+                        ticker=(t.get("label") or tid).upper(),
+                        direction=(row.get("direction") or "").strip() or None,
+                        grade=None,  # grading happens at ledger level (eng_hot)
+                        combo=(row.get("signal") or "").strip() or None,
+                        price=_float_or_none(row.get("signal_price")),
+                        accuracy_pct=_float_or_none(row.get("acc_strict_pct")),
+                        bar_time=(row.get("bar_time_cst") or "").strip() or None,
+                        logged_at=_parse_cst(logged),
+                        raw={k: v for k, v in row.items() if k},
+                    )
+                )
+                file_ins += 1
+            db.commit()
+            inserted += file_ins
+            report[str(path)] = {"rows": len(rows), "inserted": file_ins}
+    return {"inserted": inserted, "files": report}
+
+
+def sync_everything(db: Session, *, include_archive: bool = True, force: bool = True) -> dict:
+    """One pass over every signal source: central ledgers, worker CSVs,
+    gex/econ snapshots. Callers must hold no session-level locks; this
+    serializes on _SYNC_LOCK itself."""
+    with _SYNC_LOCK:
+        return {
+            "signals": sync_signals(db, include_archive=include_archive, force=force),
+            "workers": sync_worker_signals(db, force=force),
+            "snapshots": sync_snapshots(db),
+        }
 
 
 def sync_snapshots(db: Session) -> dict:
