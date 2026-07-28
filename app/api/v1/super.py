@@ -104,15 +104,24 @@ def get_econ() -> dict:
 @router.post("/regenerate", operation_id="regenerateEngines")
 def regenerate(
     categories: str | None = Query(
-        default=None, description="comma-separated: etf,stock,crypto; omit for all"
+        default=None, description="comma-separated: etf,stock,crypto,india; omit for all"
     ),
+    force: bool = Query(
+        default=False,
+        description="launch even if the last regenerate was under 24h ago",
+    ),
+    db: Session = Depends(get_db),
 ) -> dict:
     """Re-run every enabled engine for today (--once --backfill-today per
     category). Results land in the ledgers within minutes and the auto-sync
-    loop stores them in SQLite; watch /super/sync/status."""
+    loop stores them in SQLite; watch /super/sync/status.
+
+    If the engines already regenerated in the past 24h, this returns
+    ``recent: true`` without launching — pass ``force=true`` after the user
+    confirms, or skip regeneration and turn on the live watcher instead."""
     cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
     try:
-        return svc.regenerate_engines(cats)
+        return svc.regenerate_engines(cats, db=db, force=force)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"regenerate failed: {exc}")
 

@@ -193,6 +193,7 @@ def super_dir(tmp_path: Path, monkeypatch) -> Path:
     # Never scan or touch real machine processes from tests.
     monkeypatch.setattr(svc, "_scan_running", lambda force=False: {})
     svc._CHILDREN.clear()
+    svc.invalidate_caches()  # state/scan TTL caches must not leak across tests
     return sdir
 
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -70,10 +71,39 @@ async def _super_sync_loop(interval: int) -> None:
         await asyncio.sleep(interval)
 
 
+def _warn_on_duplicate_server(port: int) -> None:
+    """A second uvicorn on the same port fails to bind but keeps running its
+    background loops — that happened here and pegged the CPU. Shout early."""
+    try:
+        import psutil
+
+        me = os.getpid()
+        others = []
+        for proc in psutil.process_iter(["pid", "name"]):
+            try:
+                if proc.info["pid"] == me:
+                    continue
+                if not (proc.info.get("name") or "").lower().startswith("python"):
+                    continue
+                cmd = " ".join(proc.cmdline())
+                if "uvicorn" in cmd and "app.main:app" in cmd:
+                    others.append(proc.info["pid"])
+            except psutil.Error:
+                continue
+        if others:
+            logging.getLogger("app").warning(
+                "Another Vidura API process is already running (pid %s). Two servers "
+                "double every background loop — stop the old one.", others
+            )
+    except Exception:  # never block startup on a diagnostic
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     settings = get_settings()
+    _warn_on_duplicate_server(8790)
     sync_task: asyncio.Task | None = None
     if settings.super_auto_sync and settings.super_dir.is_dir():
         sync_task = asyncio.create_task(_super_sync_loop(settings.super_sync_interval))

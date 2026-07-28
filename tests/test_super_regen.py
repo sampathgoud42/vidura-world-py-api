@@ -19,7 +19,21 @@ def test_regenerate_spawns_backfill_once_per_category(client, monkeypatch, super
     assert body["skipped"] == {"crypto": "no enabled tickers"}
     assert "--once" in spawned[0] and "--backfill-today" in spawned[0]
 
-    resp = client.post("/api/v1/super/regenerate", params={"categories": "crypto"})
+    # second call within 24h: nothing launched, user must confirm
+    resp = client.post("/api/v1/super/regenerate")
+    body = resp.json()
+    assert body.get("recent") is True
+    assert body["launched"] == {}
+    assert 0 <= body["hours_ago"] < 24
+
+    # force launches despite the fresh stamp
+    resp = client.post("/api/v1/super/regenerate", params={"force": "true"})
+    assert resp.json().get("recent") is None
+    assert resp.json()["launched"] == {"etf": 5151}
+
+    resp = client.post(
+        "/api/v1/super/regenerate", params={"categories": "crypto", "force": "true"}
+    )
     assert resp.json()["launched"] == {}
 
 

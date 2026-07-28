@@ -47,8 +47,17 @@ CATEGORY_SEQUENCE = ("etf", "stock", "crypto")
 # also finds supervisors started by bots.py / schtask / vite.
 _CHILDREN: dict[str, subprocess.Popen] = {}
 
-# 8-second cache of the machine-wide supervisor scan (matches vite).
+# Cached machine-wide supervisor scan. The TTL exceeds the desk's 8s poll so
+# a steady stream of clients cannot turn every request into a process walk.
+_SCAN_TTL = 20.0
 _SCAN_CACHE: dict = {"ts": 0.0, "running": {}}
+_SCAN_LOCK = threading.Lock()
+
+# Short cache of the assembled desk state: every open tab polls /super/state
+# every 8s and they can all share one assembly.
+_STATE_TTL = 4.0
+_STATE_CACHE: dict = {"ts": 0.0, "key": None, "value": None}
+_STATE_LOCK = threading.Lock()
 
 # Sync endpoints run on the threadpool; serialize scan-then-spawn and the
 # select-then-insert sync passes so concurrent requests cannot double-spawn
@@ -112,8 +121,13 @@ def write_enabled(enabled: dict[str, bool]) -> dict:
         encoding="utf-8",
         newline="\n",
     )
-    _SCAN_CACHE["ts"] = 0.0  # force fresh liveness on next state
+    invalidate_caches()  # next state must reflect the new toggles
     return cfg
+
+
+def invalidate_caches() -> None:
+    _SCAN_CACHE["ts"] = 0.0
+    _STATE_CACHE.update(ts=0.0, key=None, value=None)
 
 
 # --- file readers (string-preserving) --------------------------------------
@@ -166,29 +180,50 @@ def read_econ() -> dict | None:
 
 # --- supervisor liveness / control -----------------------------------------
 
-def _scan_running(force: bool = False) -> dict[str, int]:
-    """category -> pid for any python running super_signal_bot.py, however
-    it was started (bots.py, schtask, vite, or us)."""
-    now = time.monotonic()
-    if not force and now - _SCAN_CACHE["ts"] < 8.0:
-        return _SCAN_CACHE["running"]
-    running: dict[str, int] = {}
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+def iter_python_processes():
+    """Yield (proc, cmdline_list) for python processes only.
+
+    Critical for performance on Windows: ``process_iter(['cmdline'])`` reads
+    the command line of EVERY process (~8s for 300+ processes on this
+    machine). Fetching names first and reading cmdline only for the handful
+    of python processes is ~140x faster (~0.06s).
+    """
+    for proc in psutil.process_iter(["pid", "name"]):
         try:
             name = (proc.info.get("name") or "").lower()
             if not name.startswith("python"):
                 continue
-            cmdline = proc.info.get("cmdline") or []
-            joined = " ".join(cmdline)
-            if "super_signal_bot.py" not in joined:
+            cmdline = proc.cmdline()
+        except psutil.Error:
+            continue
+        yield proc, cmdline
+
+
+def _scan_running(force: bool = False) -> dict[str, int]:
+    """category -> pid for any python running super_signal_bot.py, however
+    it was started (bots.py, schtask, vite, or us).
+
+    Single-flight + TTL cached: concurrent /super/state requests (the desk
+    polls every 8s, and every open tab polls) must never each start their
+    own scan.
+    """
+    now = time.monotonic()
+    if not force and now - _SCAN_CACHE["ts"] < _SCAN_TTL:
+        return _SCAN_CACHE["running"]
+    with _SCAN_LOCK:
+        # Another thread may have refreshed while we waited for the lock.
+        now = time.monotonic()
+        if not force and now - _SCAN_CACHE["ts"] < _SCAN_TTL:
+            return _SCAN_CACHE["running"]
+        running: dict[str, int] = {}
+        for proc, cmdline in iter_python_processes():
+            if "super_signal_bot.py" not in " ".join(cmdline):
                 continue
             for i, arg in enumerate(cmdline):
                 if arg == "--category" and i + 1 < len(cmdline):
                     running.setdefault(cmdline[i + 1], proc.info["pid"])
-        except psutil.Error:
-            continue
-    _SCAN_CACHE.update(ts=now, running=running)
-    return running
+        _SCAN_CACHE.update(ts=time.monotonic(), running=running)
+        return running
 
 
 def _category_liveness(key: str, running: dict[str, int]) -> tuple[bool, int | None]:
@@ -247,20 +282,69 @@ def start_supervisors() -> dict:
             except OSError as exc:
                 failed[key] = str(exc)
                 logger.warning("Could not start super supervisor %s: %s", key, exc)
-        _SCAN_CACHE["ts"] = 0.0
+        invalidate_caches()
     result = {"started": started, "already": already, "sequence": started + already}
     if failed:
         result["failed"] = failed
     return result
 
 
-def regenerate_engines(categories: list[str] | None = None) -> dict:
+REGEN_RECENT_HOURS = 24
+
+
+def last_regenerate(db: Session) -> datetime | None:
+    """When the engines were last regenerated through this API (naive UTC)."""
+    row = db.scalar(
+        select(DailySnapshot)
+        .where(DailySnapshot.kind == "regen")
+        .order_by(DailySnapshot.fetched_at.desc())
+        .limit(1)
+    )
+    return row.fetched_at if row else None
+
+
+def _stamp_regenerate(db: Session, launched: dict) -> None:
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    date = now.date().isoformat()
+    row = db.scalar(
+        select(DailySnapshot).where(
+            DailySnapshot.kind == "regen", DailySnapshot.snapshot_date == date
+        )
+    )
+    payload = {"at": now.isoformat(), "launched": launched}
+    if row is None:
+        db.add(DailySnapshot(kind="regen", snapshot_date=date, payload=payload, source_file=None))
+    else:
+        row.payload = payload
+        row.fetched_at = now
+    db.commit()
+
+
+def regenerate_engines(
+    categories: list[str] | None = None, *, db: Session | None = None, force: bool = False
+) -> dict:
     """Kick one detached ``--once --backfill-today`` pass per category: every
     worker re-emits today's signals and the supervisor aggregates them into
     the central ledgers. The API's auto-sync loop then stores the results in
     SQLite. Returns the spawned pids; progress is visible via /super/state
-    and /super/sync/status."""
+    and /super/sync/status.
+
+    If the last regenerate through this API was under 24h ago and ``force``
+    is not set, nothing is launched — the caller gets ``recent: true`` so the
+    UI can confirm ("signals are fresh — go straight to the watcher?")."""
     settings = get_settings()
+    if db is not None and not force:
+        last = last_regenerate(db)
+        if last is not None:
+            age_h = (datetime.now(timezone.utc).replace(tzinfo=None) - last).total_seconds() / 3600
+            if age_h < REGEN_RECENT_HOURS:
+                return {
+                    "recent": True,
+                    "last_regenerate_at": last.isoformat(),
+                    "hours_ago": round(age_h, 1),
+                    "launched": {},
+                    "skipped": {},
+                }
     cfg = read_config()
     launched: dict[str, int] = {}
     skipped: dict[str, str] = {}
@@ -296,6 +380,8 @@ def regenerate_engines(categories: list[str] | None = None) -> dict:
                 launched[key] = proc.pid
             except OSError as exc:
                 skipped[key] = str(exc)
+    if db is not None and launched:
+        _stamp_regenerate(db, launched)
     return {"launched": launched, "skipped": skipped}
 
 
@@ -306,38 +392,31 @@ def stop_supervisors(category: str | None = None) -> dict:
     do not linger past their parent."""
     victims: list[psutil.Process] = []
     seen: set[int] = set()
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
-        try:
-            name = (proc.info.get("name") or "").lower()
-            if not name.startswith("python"):
-                continue
-            cmdline = proc.info.get("cmdline") or []
-            joined = " ".join(cmdline)
-            is_supervisor = "super_signal_bot.py" in joined
-            is_worker = "_intraday_bot.py" in joined
-            if not is_supervisor and not (is_worker and category is None):
-                continue
-            if is_supervisor and category is not None:
-                cat = None
-                for i, arg in enumerate(cmdline):
-                    if arg == "--category" and i + 1 < len(cmdline):
-                        cat = cmdline[i + 1]
-                if cat != category:
-                    continue
-            if proc.pid in seen:
-                continue
-            seen.add(proc.pid)
-            victims.append(proc)
-            if is_supervisor:
-                try:
-                    for child in proc.children(recursive=True):
-                        if child.pid not in seen:
-                            seen.add(child.pid)
-                            victims.append(child)
-                except psutil.Error:
-                    pass
-        except psutil.Error:
+    for proc, cmdline in iter_python_processes():
+        joined = " ".join(cmdline)
+        is_supervisor = "super_signal_bot.py" in joined
+        is_worker = "_intraday_bot.py" in joined
+        if not is_supervisor and not (is_worker and category is None):
             continue
+        if is_supervisor and category is not None:
+            cat = None
+            for i, arg in enumerate(cmdline):
+                if arg == "--category" and i + 1 < len(cmdline):
+                    cat = cmdline[i + 1]
+            if cat != category:
+                continue
+        if proc.pid in seen:
+            continue
+        seen.add(proc.pid)
+        victims.append(proc)
+        if is_supervisor:
+            try:
+                for child in proc.children(recursive=True):
+                    if child.pid not in seen:
+                        seen.add(child.pid)
+                        victims.append(child)
+            except psutil.Error:
+                pass
     stopped: list[dict] = []
     for proc in victims:
         try:
@@ -357,7 +436,7 @@ def stop_supervisors(category: str | None = None) -> dict:
         _CHILDREN.clear()
     else:
         _CHILDREN.pop(category, None)
-    _SCAN_CACHE["ts"] = 0.0
+    invalidate_caches()
     return {"stopped": stopped}
 
 
@@ -371,6 +450,21 @@ def _safe_proc(pid: int) -> psutil.Process | None:
 # --- state assembly ---------------------------------------------------------
 
 def build_state(*, want_all: bool = False) -> dict:
+    """Assemble the desk state, shared across concurrent pollers via a short
+    TTL cache (single-flight: one assembly serves every waiting request)."""
+    now = time.monotonic()
+    if _STATE_CACHE["key"] == want_all and now - _STATE_CACHE["ts"] < _STATE_TTL:
+        return _STATE_CACHE["value"]
+    with _STATE_LOCK:
+        now = time.monotonic()
+        if _STATE_CACHE["key"] == want_all and now - _STATE_CACHE["ts"] < _STATE_TTL:
+            return _STATE_CACHE["value"]
+        value = _build_state_uncached(want_all=want_all)
+        _STATE_CACHE.update(ts=time.monotonic(), key=want_all, value=value)
+        return value
+
+
+def _build_state_uncached(*, want_all: bool = False) -> dict:
     settings = get_settings()
     try:
         cfg = read_config()

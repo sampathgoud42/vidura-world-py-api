@@ -390,14 +390,18 @@ def stop_bot(db: Session, bot_key: str, *, user_id: str | None = None, run_id: i
 def _find_watchdogs(bot_key: str) -> list[int]:
     if bot_key != "btc60":
         return []
+    # The watchdog is a PowerShell script, so this walk cannot use the
+    # python-only fast path; names are cheap, cmdline is read selectively.
     pids = []
-    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+    for proc in psutil.process_iter(["pid", "name"]):
         try:
-            cmdline = " ".join(proc.info.get("cmdline") or [])
+            name = (proc.info.get("name") or "").lower()
+            if not (name.startswith("powershell") or name.startswith("pwsh")):
+                continue
+            if "watchdog_btc60" in " ".join(proc.cmdline()):
+                pids.append(proc.info["pid"])
         except psutil.Error:
             continue
-        if "watchdog_btc60" in cmdline:
-            pids.append(proc.info["pid"])
     return pids
 
 
