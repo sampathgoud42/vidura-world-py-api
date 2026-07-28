@@ -22,10 +22,34 @@ class BotInfo(BaseModel):
     active_run_id: int | None = None
 
 
+class SportSettings(BaseModel):
+    """Per-sport tuning for the main sports bot (maps to <SPORT>_* env)."""
+
+    contracts: int | None = Field(default=None, ge=1, le=1000, description="contracts per order")
+    bank: float | None = Field(default=None, ge=0, description="session bankroll $ (0 = unlimited)")
+
+
 class BotStartRequest(BaseModel):
     user_id: str
     version: str | None = Field(default=None, examples=["v2"])
-    mode: str = Field(default="paper", pattern="^(paper|mock)$")
+    # 'paper' is always the default; 'live' additionally requires the server
+    # to be unlocked with VIDURA_PAPER_ONLY=false (403 otherwise).
+    mode: str = Field(default="paper", pattern="^(paper|mock|live)$")
+    # --- sports-bot options (ignored by btc bots) ---
+    sports: list[str] | None = Field(
+        default=None,
+        description="active sports for the main bot, e.g. ['tennis','baseball']",
+        examples=[["tennis", "baseball"]],
+    )
+    sport_settings: dict[str, SportSettings] | None = Field(
+        default=None,
+        description="per-sport contracts/bank, keyed by sport name",
+        examples=[{"tennis": {"contracts": 20, "bank": 300}}],
+    )
+    target_pct: float | None = Field(
+        default=None, ge=0, le=1000,
+        description="profit target % on the bankroll/portfolio (TARGET_PORTFOLIO_PCT); bot halts when reached",
+    )
 
 
 class BotStopRequest(BaseModel):

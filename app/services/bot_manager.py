@@ -59,7 +59,7 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def _base_env() -> dict[str, str]:
+def _base_env(mode: str = "paper") -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("KALSHI")}
     env.update(
         {
@@ -68,22 +68,70 @@ def _base_env() -> dict[str, str]:
             "PYTHONUTF8": "1",
             # Never allow a bot halt to power off the host.
             "HALT_MACHINE_SHUTDOWN": "FALSE",
+            "PERP_BUY": "FALSE",
         }
     )
-    if get_settings().paper_only:
+    if mode == "live":
+        # Only reachable when the server is unlocked (checked in start_bot).
+        # The legacy bots default to paper, so live must be explicit.
+        env.update(
+            {
+                "DRY_RUN_MODE": "FALSE",
+                "BOT152_DRY_RUN": "FALSE",
+                "MAIN_PAPER": "FALSE",
+            }
+        )
+    else:
         env.update(
             {
                 "DRY_RUN_MODE": "TRUE",   # btc15 v2-v4, btc60, sports secrets
                 "BOT152_DRY_RUN": "TRUE",  # btc15 v5
                 "MAIN_PAPER": "TRUE",      # sports main bot
-                "PERP_BUY": "FALSE",
             }
         )
     return env
 
 
+KNOWN_SPORTS = ("tennis", "baseball")
+
+
+def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
+    """Map per-sport options onto the main sports bot's env knobs."""
+    if options.sports:
+        bad = [s for s in options.sports if s not in KNOWN_SPORTS]
+        if bad:
+            raise BotManagerError(
+                f"Unknown sport(s) {bad}; full-model sports are {list(KNOWN_SPORTS)}", 422
+            )
+        joined = ",".join(options.sports)
+        env["MAIN_SPORTS_LIST"] = joined
+        env["SPORTS_LIST"] = joined  # legacy v1/v2 bots read this name
+    for sport, cfg in (options.sport_settings or {}).items():
+        if sport not in KNOWN_SPORTS:
+            raise BotManagerError(
+                f"Unknown sport '{sport}' in sport_settings; use {list(KNOWN_SPORTS)}", 422
+            )
+        prefix = sport.upper()
+        if cfg.contracts is not None:
+            env[f"{prefix}_CONTRACTS"] = str(cfg.contracts)
+        if cfg.bank is not None:
+            env[f"{prefix}_BANK"] = f"{cfg.bank:g}"
+    if options.target_pct is not None:
+        env["TARGET_PORTFOLIO_PCT"] = f"{options.target_pct:g}"
+
+
+class BotStartOptions:
+    """Normalized start options passed through from the request schema."""
+
+    def __init__(self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None):
+        self.mode = mode
+        self.sports = sports
+        self.sport_settings = sport_settings
+        self.target_pct = target_pct
+
+
 def _launch_plan(
-    spec: BotSpec, version: BotVersion, user: User
+    spec: BotSpec, version: BotVersion, user: User, options: BotStartOptions
 ) -> tuple[list[str], Path, dict[str, str]]:
     """Build (argv, cwd, env) for a bot start honoring each family's contract."""
     settings = get_settings()
@@ -97,7 +145,7 @@ def _launch_plan(
 
     python = str(settings.bot_python or Path(sys.executable))
     argv = [python, str(_LAUNCHER), str(script)]
-    env = _base_env()
+    env = _base_env(options.mode)
 
     trade_dir = user_root / "trade_history"
     log_dir = user_root / "logs"
@@ -130,6 +178,7 @@ def _launch_plan(
         env.setdefault("MAIN_TRADE_CSV", str(trade_dir / "trade_history_main.csv"))
         env.setdefault("MAIN_PAPER_CSV", str(trade_dir / "paper_trades_main.csv"))
         env.setdefault("BASEBALL_TRADE_CSV", str(trade_dir / "trade_history_baseball.csv"))
+        _sports_env(env, options)
     else:  # pragma: no cover - registry misconfiguration
         raise BotManagerError(f"Unknown launch style {spec.launch_style}", 500)
     return argv, cwd, env
@@ -187,9 +236,7 @@ def running_run(db: Session, bot_key: str, user_id: str) -> BotRun | None:
 def _check_paper_conflict(user: User) -> None:
     """The bots load the customer .env with override=True, so a stray
     DRY_RUN_MODE=FALSE in the user's folder would silently re-enable live
-    trading underneath our forced paper env.  Refuse to start instead."""
-    if not get_settings().paper_only:
-        return
+    trading underneath a requested PAPER run.  Refuse to start instead."""
     try:
         creds = creds_svc.load_kalshi_credentials(user.user_root_folder)
     except creds_svc.CredentialsError:
@@ -215,13 +262,23 @@ def start_bot(
     *,
     version: str | None = None,
     mode: str = "paper",
+    options: BotStartOptions | None = None,
 ) -> BotRun:
     spec = get_bot(bot_key)
     ver = spec.version_or_default(version)
+    options = options or BotStartOptions(mode=mode)
+    options.mode = mode
 
-    if get_settings().paper_only and mode not in ("paper", "mock"):
-        raise BotManagerError("This server is configured paper-only; mode must be 'paper' or 'mock'", 403)
-    _check_paper_conflict(user)
+    if mode == "live":
+        if get_settings().paper_only:
+            raise BotManagerError(
+                "Live trading is locked: this server runs with VIDURA_PAPER_ONLY=true. "
+                "Set VIDURA_PAPER_ONLY=false and restart the API to enable live mode.",
+                403,
+            )
+    else:
+        # Paper runs must stay paper even if the customer .env says otherwise.
+        _check_paper_conflict(user)
 
     with _START_LOCK:
         existing = running_run(db, bot_key, user.user_id)
@@ -230,7 +287,7 @@ def start_bot(
                 f"Bot {bot_key} already running for user {user.username} (run {existing.id})", 409
             )
 
-        argv, cwd, env = _launch_plan(spec, ver, user)
+        argv, cwd, env = _launch_plan(spec, ver, user, options)
 
         settings = get_settings()
         ts = _utcnow().strftime("%Y%m%d_%H%M%S")
@@ -273,6 +330,16 @@ def start_bot(
                 f"Bot process exited immediately with code {code}. Last log lines:\n{tail}", 502
             )
 
+        extra: dict = {"argv": argv[2:], "cwd": str(cwd)}
+        if options.sports:
+            extra["sports"] = options.sports
+        if options.sport_settings:
+            extra["sport_settings"] = {
+                k: {"contracts": v.contracts, "bank": v.bank}
+                for k, v in options.sport_settings.items()
+            }
+        if options.target_pct is not None:
+            extra["target_pct"] = options.target_pct
         run = BotRun(
             user_id=user.user_id,
             bot_key=bot_key,
@@ -282,7 +349,7 @@ def start_bot(
             mode=mode,
             status="running",
             log_file=str(log_file),
-            extra={"argv": argv[2:], "cwd": str(cwd)},
+            extra=extra,
         )
         db.add(run)
         db.commit()

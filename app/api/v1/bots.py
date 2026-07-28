@@ -73,9 +73,15 @@ def _status(db: Session, bot_key: str, user_id: str | None) -> BotStatusOut:
 
 def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
     user = _user_or_404(db, payload.user_id)
+    options = bot_manager.BotStartOptions(
+        mode=payload.mode,
+        sports=payload.sports,
+        sport_settings=payload.sport_settings,
+        target_pct=payload.target_pct,
+    )
     try:
         run = bot_manager.start_bot(
-            db, user, bot_key, version=payload.version, mode=payload.mode
+            db, user, bot_key, version=payload.version, mode=payload.mode, options=options
         )
     except bot_manager.BotManagerError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
