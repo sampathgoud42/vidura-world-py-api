@@ -1,0 +1,16 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0.44
+pydantic>=2.12
+pydantic-settings>=2.5
+cryptography>=43
+requests>=2.32
+python-multipart
+email-validator
+python-dotenv
+psutil
+tzdata
+
+# dev / test
+pytest>=8
+httpx>=0.27
