@@ -254,6 +254,51 @@ def start_supervisors() -> dict:
     return result
 
 
+def regenerate_engines(categories: list[str] | None = None) -> dict:
+    """Kick one detached ``--once --backfill-today`` pass per category: every
+    worker re-emits today's signals and the supervisor aggregates them into
+    the central ledgers. The API's auto-sync loop then stores the results in
+    SQLite. Returns the spawned pids; progress is visible via /super/state
+    and /super/sync/status."""
+    settings = get_settings()
+    cfg = read_config()
+    launched: dict[str, int] = {}
+    skipped: dict[str, str] = {}
+    with _ON_LOCK:
+        for key, cat in (cfg.get("categories") or {}).items():
+            if categories and key not in categories:
+                continue
+            if not any(t.get("enabled") for t in cat.get("tickers") or []):
+                skipped[key] = "no enabled tickers"
+                continue
+            try:
+                python = str(settings.super_python)
+                if not Path(python).is_file():
+                    python = sys.executable
+                bot = settings.super_dir / (cat.get("bot") or "super_signal_bot.py")
+                if not bot.is_file():
+                    raise OSError(f"bot script missing: {bot}")
+                out = settings.super_dir / f"super_{key}_regen.out"
+                creationflags = 0
+                if os.name == "nt":
+                    DETACHED_PROCESS = 0x00000008
+                    creationflags = DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+                with open(out, "a", encoding="utf-8", errors="replace") as log_handle:
+                    proc = subprocess.Popen(
+                        [python, str(bot), "--category", key, "--once", "--backfill-today"],
+                        cwd=str(settings.super_dir),
+                        stdout=log_handle,
+                        stderr=subprocess.STDOUT,
+                        stdin=subprocess.DEVNULL,
+                        close_fds=True,
+                        creationflags=creationflags,
+                    )
+                launched[key] = proc.pid
+            except OSError as exc:
+                skipped[key] = str(exc)
+    return {"launched": launched, "skipped": skipped}
+
+
 def stop_supervisors(category: str | None = None) -> dict:
     """Stop supervisors by cmdline match, mirroring `python bots.py stop`:
     matches super_signal_bot.py AND stray _intraday_bot.py workers (full

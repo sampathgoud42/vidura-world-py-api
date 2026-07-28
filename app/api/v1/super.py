@@ -101,6 +101,35 @@ def get_econ() -> dict:
     return econ
 
 
+@router.post("/regenerate", operation_id="regenerateEngines")
+def regenerate(
+    categories: str | None = Query(
+        default=None, description="comma-separated: etf,stock,crypto; omit for all"
+    ),
+) -> dict:
+    """Re-run every enabled engine for today (--once --backfill-today per
+    category). Results land in the ledgers within minutes and the auto-sync
+    loop stores them in SQLite; watch /super/sync/status."""
+    cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
+    try:
+        return svc.regenerate_engines(cats)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=500, detail=f"regenerate failed: {exc}")
+
+
+@router.post("/gex/reload", operation_id="reloadGex")
+def reload_gex(db: Session = Depends(get_db)) -> dict:
+    """Re-read gex_daily.json from disk and store today's snapshot in the
+    DB. Deliberately does NOT call the flashAlpha API (free tier is 5
+    requests/day, owned by the 09:00 CST scheduled job)."""
+    with svc._SYNC_LOCK:
+        result = svc.sync_snapshots(db)
+    gex = svc.read_gex()
+    if gex is None:
+        raise HTTPException(status_code=404, detail="gex_daily.json not available yet")
+    return {"reloaded": True, "snapshots": result, "gex": gex}
+
+
 @router.post("/econ/refresh", operation_id="refreshEcon")
 def refresh_econ() -> dict:
     """Regenerate econ_today.json (keyless: hardcoded calendar + one
