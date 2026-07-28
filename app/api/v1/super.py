@@ -84,6 +84,20 @@ def get_config(db: Session = Depends(get_db)) -> dict:
     return cfg
 
 
+# --- ticker quotes ---------------------------------------------------------
+
+@router.get("/quote/{ticker}", operation_id="getTickerQuote")
+def get_quote(ticker: str) -> dict:
+    """Live price + classic pivot points for a desk ticker (yfinance,
+    keyless, cached 60s). Includes the TradingView chart URL."""
+    from app.services import quotes
+
+    try:
+        return quotes.quote_for(ticker)
+    except quotes.QuoteError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
 # --- GEX / econ ------------------------------------------------------------
 
 @router.get("/gex", operation_id="getGex")
