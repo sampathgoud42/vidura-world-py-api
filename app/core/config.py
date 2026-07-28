@@ -22,6 +22,17 @@ class Settings(BaseSettings):
 
     # --- persistence ---------------------------------------------------
     database_path: Path = Path("D:/_projects/database/app.db")
+    # Full SQLAlchemy URL override — set this to run on Postgres in the
+    # cloud (e.g. Render/Neon: postgresql+psycopg://user:pw@host/db).
+    # Empty = use the SQLite file above.
+    database_url_override: str = ""
+
+    # --- cloud profile ---------------------------------------------------
+    # True on Render / Cloud Run: there is no bot repo and no place to spawn
+    # long-running trading processes, so execution endpoints answer 503 and
+    # only the DB-backed read APIs are served. Auto-enabled when the
+    # platform sets PORT (Render/Cloud Run both do) unless set explicitly.
+    cloud_mode: bool = False
 
     # --- source repo the bots live in ----------------------------------
     source_repo: Path = Path("D:/_projects/38trades-py-claude")
@@ -67,7 +78,18 @@ class Settings(BaseSettings):
 
     @property
     def database_url(self) -> str:
+        if self.database_url_override:
+            # Render hands out legacy 'postgres://' URLs; SQLAlchemy 2 needs
+            # an explicit driver.
+            url = self.database_url_override
+            if url.startswith("postgres://"):
+                url = "postgresql+psycopg://" + url[len("postgres://"):]
+            return url
         return f"sqlite:///{self.database_path.as_posix()}"
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.database_url.startswith("sqlite")
 
     @property
     def log_dir(self) -> Path:
@@ -76,7 +98,21 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    import os
+
     settings = Settings()
-    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
-    settings.log_dir.mkdir(parents=True, exist_ok=True)
+    # PORT is injected by Render and Cloud Run; treat that as "cloud" unless
+    # the operator said otherwise.
+    if "VIDURA_CLOUD_MODE" not in os.environ and os.environ.get("PORT"):
+        settings.cloud_mode = True
+    if settings.cloud_mode:
+        # Never auto-ingest from a bot repo that does not exist in a
+        # container, and never try to run engines there.
+        settings.super_auto_sync = False
+    if settings.is_sqlite:
+        settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        settings.log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass  # read-only container filesystem
     return settings

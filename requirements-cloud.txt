@@ -1,0 +1,21 @@
+# Cloud runtime (Render / Cloud Run) — the DB-backed read API only.
+# Deliberately excludes the local-bot runtime deps (aiohttp, numpy, pandas,
+# yfinance) and psutil: no bot processes exist in a container, so the image
+# stays small and boots fast on free tiers.
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+sqlalchemy>=2.0.44
+pydantic>=2.12
+pydantic-settings>=2.5
+email-validator
+python-dotenv
+tzdata
+
+# Kalshi client (RSA-PSS signing) — small, keeps /kalshi-client working
+# when a user folder is mounted; harmless otherwise.
+cryptography>=43
+requests>=2.32
+
+# Postgres driver: only used when VIDURA_DATABASE_URL points at Postgres.
+psycopg[binary]>=3.2

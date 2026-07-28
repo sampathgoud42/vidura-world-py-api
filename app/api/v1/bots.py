@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.api.cloud import require_local_runtime
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.models import User
@@ -72,6 +73,7 @@ def _status(db: Session, bot_key: str, user_id: str | None) -> BotStatusOut:
 
 
 def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
+    require_local_runtime(f"Starting the {bot_key} bot")
     user = _user_or_404(db, payload.user_id)
     options = bot_manager.BotStartOptions(
         mode=payload.mode,
@@ -92,6 +94,7 @@ def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
 
 
 def _stop(db: Session, bot_key: str, payload: BotStopRequest) -> list[BotRunOut]:
+    require_local_runtime(f"Stopping the {bot_key} bot")
     try:
         stopped = bot_manager.stop_bot(
             db, bot_key, user_id=payload.user_id, run_id=payload.run_id

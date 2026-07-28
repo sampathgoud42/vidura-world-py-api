@@ -1,0 +1,19 @@
+# keep the build context tiny — only app/ + requirements-cloud.txt are used
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.github/
+var/
+tests/
+scripts/
+docs/
+*.db
+*.db-wal
+*.db-shm
+.env
+*.log
+*.md
+!README.md

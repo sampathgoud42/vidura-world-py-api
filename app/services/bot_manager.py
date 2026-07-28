@@ -26,7 +26,10 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-import psutil
+try:  # psutil is local-runtime only (process control); absent in cloud images
+    import psutil
+except ImportError:  # pragma: no cover - exercised by the cloud image
+    psutil = None
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -409,7 +412,7 @@ def stop_bot(db: Session, bot_key: str, *, user_id: str | None = None, run_id: i
 
 
 def _find_watchdogs(bot_key: str) -> list[int]:
-    if bot_key != "btc60":
+    if bot_key != "btc60" or psutil is None:
         return []
     # The watchdog is a PowerShell script, so this walk cannot use the
     # python-only fast path; names are cheap, cmdline is read selectively.
@@ -426,9 +429,9 @@ def _find_watchdogs(bot_key: str) -> list[int]:
     return pids
 
 
-def _run_process(run: BotRun) -> psutil.Process | None:
+def _run_process(run: BotRun):
     """Resolve the run's psutil process, guarding against PID reuse."""
-    if run.pid is None:
+    if run.pid is None or psutil is None:
         return None
     try:
         proc = psutil.Process(run.pid)

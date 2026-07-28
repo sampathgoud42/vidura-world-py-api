@@ -75,7 +75,7 @@ def _warn_on_duplicate_server(port: int) -> None:
     """A second uvicorn on the same port fails to bind but keeps running its
     background loops — that happened here and pegged the CPU. Shout early."""
     try:
-        import psutil
+        import psutil  # local-runtime only; absent in the cloud image
 
         me = os.getpid()
         others = []

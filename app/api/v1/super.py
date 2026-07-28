@@ -17,6 +17,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 
+from app.api.cloud import require_local_runtime
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.schemas.super import (
@@ -51,6 +52,7 @@ def get_state(request: Request, db: Session = Depends(get_db)) -> dict:
 def super_on() -> dict:
     """Start missing category supervisors (detached; they survive API
     restarts). Categories with zero enabled tickers are skipped."""
+    require_local_runtime("Starting the signal supervisors")
     try:
         return svc.start_supervisors()
     except (OSError, ValueError) as exc:
@@ -61,6 +63,7 @@ def super_on() -> dict:
 def super_off(payload: SuperStopRequest | None = None) -> dict:
     """Stop supervisors (all, or one category). The legacy stack has no stop
     endpoint — this replaces `python bots.py stop`."""
+    require_local_runtime("Stopping the signal supervisors")
     return svc.stop_supervisors(payload.category if payload else None)
 
 
@@ -137,6 +140,7 @@ def regenerate(
     If the engines already regenerated in the past 24h, this returns
     ``recent: true`` without launching — pass ``force=true`` after the user
     confirms, or skip regeneration and turn on the live watcher instead."""
+    require_local_runtime("Regenerating the engines")
     cats = [c.strip() for c in categories.split(",") if c.strip()] if categories else None
     try:
         return svc.regenerate_engines(cats, db=db, force=force)
@@ -164,6 +168,7 @@ def reload_gex(db: Session = Depends(get_db)) -> dict:
 def refresh_econ() -> dict:
     """Regenerate econ_today.json (keyless: hardcoded calendar + one
     yfinance yields fetch, cached per day by the script itself)."""
+    require_local_runtime("Refreshing econ data")
     settings = get_settings()
     if not settings.super_dir.is_dir():
         raise HTTPException(

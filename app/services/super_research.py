@@ -30,7 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import psutil
+try:  # psutil is local-runtime only (process control); absent in cloud images
+    import psutil
+except ImportError:  # pragma: no cover - exercised by the cloud image
+    psutil = None
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -196,6 +199,8 @@ def iter_python_processes():
     machine). Fetching names first and reading cmdline only for the handful
     of python processes is ~140x faster (~0.06s).
     """
+    if psutil is None:
+        return
     for proc in psutil.process_iter(["pid", "name"]):
         try:
             name = (proc.info.get("name") or "").lower()

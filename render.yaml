@@ -1,0 +1,35 @@
+# Render Blueprint — deploy with: New + > Blueprint > pick this repo.
+# Free tier notes are in DEPLOY_CLOUD.md (free web services sleep after 15
+# min idle and have an EPHEMERAL filesystem: use Postgres or a paid disk if
+# the data must survive a restart).
+
+services:
+  - type: web
+    name: vidura-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: VIDURA_CLOUD_MODE
+        value: "true"
+      - key: VIDURA_SUPER_AUTO_SYNC
+        value: "false"
+      - key: VIDURA_PAPER_ONLY
+        value: "true"
+      # Generated once by Render; send it as the X-API-Key header.
+      - key: VIDURA_API_KEY
+        generateValue: true
+      # Uncomment together with the databases block below to use Postgres
+      # instead of the container's ephemeral SQLite file.
+      # - key: VIDURA_DATABASE_URL
+      #   fromDatabase:
+      #     name: vidura-db
+      #     property: connectionString
+
+# databases:
+#   - name: vidura-db
+#     plan: free          # free Postgres expires after 30 days
+#     databaseName: vidura
+#     user: vidura

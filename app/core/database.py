@@ -15,11 +15,15 @@ class Base(DeclarativeBase):
 
 
 def _make_engine(url: str):
+    is_sqlite = url.startswith("sqlite")
     engine = create_engine(
         url,
-        connect_args={"check_same_thread": False},
+        # check_same_thread is a SQLite-only DBAPI flag
+        connect_args={"check_same_thread": False} if is_sqlite else {},
         pool_pre_ping=True,
     )
+    if not is_sqlite:
+        return engine
 
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragma(dbapi_connection, _record):  # pragma: no cover
@@ -56,8 +60,14 @@ def init_db() -> None:
 
 
 def _migrate(bind) -> None:
-    """Tiny additive migrations — create_all never alters existing tables."""
+    """Tiny additive migrations — create_all never alters existing tables.
+
+    SQLite only: on Postgres, create_all already builds the current schema
+    (there is no pre-existing legacy database to patch)."""
     from sqlalchemy import text
+
+    if bind.dialect.name != "sqlite":
+        return
 
     with bind.begin() as conn:
         cols = {
