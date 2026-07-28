@@ -62,6 +62,20 @@ class Settings(BaseSettings):
     # --- runtime dirs ---------------------------------------------------
     var_dir: Path = Path(__file__).resolve().parents[2] / "var"
 
+    # --- flashAlpha GEX ---------------------------------------------------
+    # FREE plan = 5 requests/day TOTAL. The API is now the ONLY fetcher (the
+    # FlashAlphaGEX_Daily Windows task was retired 2026-07-28 in favour of
+    # the in-process 09:00 CST loop), so it owns the whole budget. Every call
+    # is counted in the DB and refused past this cap. Lower it back to 3 if
+    # you ever re-create that scheduled task.
+    flashalpha_daily_cap: int = 5
+    # Daily 09:00 CST snapshot inside the API — the replacement for the
+    # FlashAlphaGEX_Daily Windows task. Disable if that task still exists,
+    # or both will spend quota.
+    gex_daily_enabled: bool = True
+    flashalpha_api_key: str = ""  # else read from <source_repo>/super_research/flashalpha.env
+    gex_tickers: str = "spy,qqq"
+
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the

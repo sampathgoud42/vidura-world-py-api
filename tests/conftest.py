@@ -18,6 +18,10 @@ os.environ.setdefault("VIDURA_ALLOW_ANY_ROOT", "true")
 # Keep tests hermetic: no background loop ingesting the real super_research
 # tree into the test database.
 os.environ.setdefault("VIDURA_SUPER_AUTO_SYNC", "false")
+# The daily GEX job must NEVER run in a test: flashAlpha's free plan allows
+# 5 requests/day and the desk depends on them.
+os.environ.setdefault("VIDURA_GEX_DAILY_ENABLED", "false")
+os.environ.setdefault("VIDURA_FLASHALPHA_API_KEY", "test-key-not-real")
 
 import pytest
 from fastapi.testclient import TestClient

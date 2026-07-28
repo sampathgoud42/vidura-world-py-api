@@ -148,6 +148,38 @@ def regenerate(
         raise HTTPException(status_code=500, detail=f"regenerate failed: {exc}")
 
 
+@router.post("/gex/refresh", operation_id="refreshGex")
+def refresh_gex(
+    tickers: str | None = Query(
+        default=None, description="comma-separated, default spy,qqq — ONE API call each"
+    ),
+    db: Session = Depends(get_db),
+) -> dict:
+    """LIVE-fetch gamma exposure from flashAlpha (ported FlashAlphaGEX_Daily
+    logic) and store it as the new snapshot.
+
+    Spends real API quota: the FREE plan allows 5 requests/day. Calls are
+    metered in the DB and refused past VIDURA_FLASHALPHA_DAILY_CAP. Use
+    POST /super/gex/reload (free) when you only need to re-read what is
+    already stored."""
+    from app.services import gex as gex_svc
+
+    try:
+        return gex_svc.refresh(db, [t for t in tickers.split(",")] if tickers else None)
+    except gex_svc.QuotaExhausted as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except gex_svc.GexError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/gex/quota", operation_id="getGexQuota")
+def gex_quota(db: Session = Depends(get_db)) -> dict:
+    """How much flashAlpha budget the API has spent today."""
+    from app.services import gex as gex_svc
+
+    return gex_svc.quota_state(db)
+
+
 @router.post("/gex/reload", operation_id="reloadGex")
 def reload_gex(db: Session = Depends(get_db)) -> dict:
     """Re-ingest gex_daily.json from disk (when the source repo is present)

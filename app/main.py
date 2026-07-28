@@ -99,19 +99,67 @@ def _warn_on_duplicate_server(port: int) -> None:
         pass
 
 
+def _run_gex_refresh() -> dict:
+    from app.core.database import SessionLocal
+    from app.services import gex as gex_svc
+
+    db = SessionLocal()
+    try:
+        return gex_svc.refresh(db)
+    finally:
+        db.close()
+
+
+async def _gex_daily_loop() -> None:
+    """Daily GEX snapshot at 09:00 CST — the in-process replacement for the
+    FlashAlphaGEX_Daily scheduled task. Fires once per calendar day (CST);
+    a restart after 09:00 catches up the same day if it has not run yet."""
+    from zoneinfo import ZoneInfo
+
+    from app.core.database import SessionLocal
+    from app.services import gex as gex_svc
+
+    log = logging.getLogger("app.gex_daily")
+    cst = ZoneInfo("America/Chicago")
+    while True:
+        try:
+            now = datetime.now(cst)
+            db = SessionLocal()
+            try:
+                already = gex_svc.quota_state(db)["used_by_api"] > 0
+                snap = gex_svc.latest_gex_date(db)
+            finally:
+                db.close()
+            due = now.hour >= 9 and snap != now.date().isoformat() and not already
+            if due:
+                result = await asyncio.to_thread(_run_gex_refresh)
+                log.info(
+                    "daily GEX snapshot: %s call(s), stale=%s",
+                    result["calls_made"], result["gex"]["stale"],
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logging.getLogger("app.gex_daily").warning("daily GEX pass failed: %s", exc)
+        await asyncio.sleep(600)  # re-check every 10 minutes
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     settings = get_settings()
     _warn_on_duplicate_server(8790)
-    sync_task: asyncio.Task | None = None
+    tasks: list[asyncio.Task] = []
     if settings.super_auto_sync and settings.super_dir.is_dir():
-        sync_task = asyncio.create_task(_super_sync_loop(settings.super_sync_interval))
+        tasks.append(asyncio.create_task(_super_sync_loop(settings.super_sync_interval)))
+    if settings.gex_daily_enabled and not settings.cloud_mode:
+        tasks.append(asyncio.create_task(_gex_daily_loop()))
     yield
-    if sync_task is not None:
-        sync_task.cancel()
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
         try:
-            await sync_task
+            await task
         except asyncio.CancelledError:
             pass
 

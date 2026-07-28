@@ -22,7 +22,6 @@ SYMBOL_MAP: dict[str, tuple[str, str]] = {
     "BTC": ("BTC-USD", "BTCUSD"),
     "NIFTY": ("^NSEI", "NSE:NIFTY"),
     "BANKNIFTY": ("^NSEBANK", "NSE:BANKNIFTY"),
-    "TOP100": ("^NDX", "NDX"),
 }
 
 TV_CHART_BASE = "https://www.tradingview.com/chart/OI0ZrHVM/?symbol="
