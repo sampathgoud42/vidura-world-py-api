@@ -106,6 +106,11 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
         joined = ",".join(options.sports)
         env["MAIN_SPORTS_LIST"] = joined
         env["SPORTS_LIST"] = joined  # legacy v1/v2 bots read this name
+    if options.contracts:
+        # blanket size for every selected sport (sport_settings still wins)
+        env["SPORT_CONTRACTS"] = str(options.contracts)
+        for sport in (options.sports or KNOWN_SPORTS):
+            env[f"{sport.upper()}_CONTRACTS"] = str(options.contracts)
     for sport, cfg in (options.sport_settings or {}).items():
         if sport not in KNOWN_SPORTS:
             raise BotManagerError(
@@ -123,11 +128,14 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
 class BotStartOptions:
     """Normalized start options passed through from the request schema."""
 
-    def __init__(self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None):
+    def __init__(
+        self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None, contracts=None
+    ):
         self.mode = mode
         self.sports = sports
         self.sport_settings = sport_settings
         self.target_pct = target_pct
+        self.contracts = contracts
 
 
 def _launch_plan(
@@ -152,6 +160,12 @@ def _launch_plan(
     trade_dir.mkdir(exist_ok=True)
     log_dir.mkdir(exist_ok=True)
 
+    if options.mode in ("paper", "mock"):
+        # Paper runs must not be blocked by the REAL account balance: the
+        # btc15 family halts when the live portfolio is under this floor
+        # ($100 default), which stops paper sessions on a small account.
+        env.setdefault("DO_NOT_BUY_IF_PORTFOLIO_BELOW", "0")
+
     if spec.launch_style == "cwd_customer":
         # btc15 family: CWD supplies .env + PEM.  Redirect its outputs into
         # the user's folder so multi-user runs never collide on shared files.
@@ -159,11 +173,18 @@ def _launch_plan(
         env.setdefault("BOT_CSV_PATH", str(trade_dir / f"{version.version}_trade_history.csv"))
         env.setdefault("BOT_LOG_DIR", str(log_dir))
         env.setdefault("BOT152_CSV_PATH", str(trade_dir / "bot_btc_15_2_trades.csv"))
+        if options.contracts:
+            # fixed size instead of the %-of-portfolio sizing
+            env["KALSHI_CONTRACTS"] = str(options.contracts)
+            env["CONTRACTS_PV_PCT"] = "0"
+            env["BOT152_CONTRACTS"] = str(options.contracts)
     elif spec.launch_style == "env_customer":
         # btc60 family: resolves paths from __file__, customer via env.
         cwd = script.parent
         env["BTC_CUSTOMERS_DIR"] = str(user_root.parent)
         env["BTC_CUSTOMER"] = user_root.name
+        if options.contracts:
+            env["KALSHI_CONTRACTS"] = str(options.contracts)
     elif spec.launch_style == "argv_customer":
         # sports family: customer name as argv[1] + SPORTS_* env pins.
         cwd = script.parent

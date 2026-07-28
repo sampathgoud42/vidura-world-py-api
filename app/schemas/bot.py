@@ -50,6 +50,11 @@ class BotStartRequest(BaseModel):
         default=None, ge=0, le=1000,
         description="profit target % on the bankroll/portfolio (TARGET_PORTFOLIO_PCT); bot halts when reached",
     )
+    contracts: int | None = Field(
+        default=None, ge=1, le=1000,
+        description="fixed contracts per order (BTC bots: KALSHI_CONTRACTS/BOT152_CONTRACTS; "
+        "sports: applied to every selected sport unless sport_settings overrides it)",
+    )
 
 
 class BotStopRequest(BaseModel):

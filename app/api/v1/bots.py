@@ -78,6 +78,7 @@ def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
         sports=payload.sports,
         sport_settings=payload.sport_settings,
         target_pct=payload.target_pct,
+        contracts=payload.contracts,
     )
     try:
         run = bot_manager.start_bot(
