@@ -129,6 +129,43 @@ def test_missing_key_is_a_clear_error(client, monkeypatch, super_dir):
     assert "flashAlpha API key" in resp.json()["detail"]
 
 
+def test_custom_lookup_does_not_touch_the_desk_snapshot(client, fake_api, super_dir):
+    """persist=false: metered + archived, but SPY/QQQ view is untouched."""
+    client.post("/api/v1/super/gex/refresh")          # seed the desk (spy+qqq)
+    desk_before = client.get("/api/v1/super/gex").json()
+    quota_before = client.get("/api/v1/super/gex/quota").json()["used_by_api"]
+
+    body = client.post(
+        "/api/v1/super/gex/refresh",
+        params={"tickers": "nvda", "persist": "false"},
+    ).json()
+
+    # only the asked-for ticker comes back
+    assert list(body["gex"]["tickers"]) == ["NVDA"]
+    assert body["calls_made"] == 1
+    # the budget was still charged
+    assert body["quota"]["used_by_api"] == quota_before + 1
+    # the desk snapshot is unchanged — no NVDA in the banner
+    desk_after = client.get("/api/v1/super/gex").json()
+    assert set(desk_after["tickers"]) == set(desk_before["tickers"]) == {"SPY", "QQQ"}
+    assert desk_after["fetched_at"] == desk_before["fetched_at"]
+    # ...but the raw payload was archived for history
+    snaps = client.get("/api/v1/super/snapshots", params={"kind": "gex_raw_nvda"}).json()
+    assert len(snaps) == 1
+
+
+def test_custom_lookup_is_refused_when_budget_is_spent(client, fake_api, monkeypatch):
+    monkeypatch.setattr(get_settings(), "flashalpha_daily_cap", 1)
+    assert client.post(
+        "/api/v1/super/gex/refresh", params={"tickers": "spy", "persist": "false"}
+    ).status_code == 200
+    resp = client.post(
+        "/api/v1/super/gex/refresh", params={"tickers": "nvda", "persist": "false"}
+    )
+    assert resp.status_code == 429
+    assert len(fake_api) == 1, "no request may reach flashAlpha past the cap"
+
+
 def test_reload_is_free_and_never_fetches(client, fake_api, super_dir):
     client.post("/api/v1/super/sync")
     before = client.get("/api/v1/super/gex/quota").json()["used_by_api"]

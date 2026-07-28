@@ -153,6 +153,11 @@ def refresh_gex(
     tickers: str | None = Query(
         default=None, description="comma-separated, default spy,qqq — ONE API call each"
     ),
+    persist: bool = Query(
+        default=True,
+        description="false = ad-hoc lookup: metered and archived, but the desk's "
+        "SPY/QQQ snapshot and gex_daily.json are left untouched",
+    ),
     db: Session = Depends(get_db),
 ) -> dict:
     """LIVE-fetch gamma exposure from flashAlpha (ported FlashAlphaGEX_Daily
@@ -165,7 +170,11 @@ def refresh_gex(
     from app.services import gex as gex_svc
 
     try:
-        return gex_svc.refresh(db, [t for t in tickers.split(",")] if tickers else None)
+        return gex_svc.refresh(
+            db,
+            [t for t in tickers.split(",")] if tickers else None,
+            persist=persist,
+        )
     except gex_svc.QuotaExhausted as exc:
         raise HTTPException(status_code=429, detail=str(exc))
     except gex_svc.GexError as exc:

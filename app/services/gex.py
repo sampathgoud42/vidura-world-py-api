@@ -191,12 +191,17 @@ def _macro(p: dict) -> dict | None:
 
 # --- the job ---------------------------------------------------------------
 
-def refresh(db: Session, tickers: list[str] | None = None) -> dict:
+def refresh(db: Session, tickers: list[str] | None = None, *, persist: bool = True) -> dict:
     """Live-fetch GEX for *tickers* (default spy,qqq), quota-guarded.
 
     Returns {gex, calls_made, quota, errors}. Never raises for a per-ticker
     failure: previous data is retained and ``stale`` is set, as in the
     original job.
+
+    ``persist=False`` is the ad-hoc lookup mode: the payload is still
+    archived (gex_raw_<ticker>) and the call still metered, but the desk's
+    merged SPY/QQQ snapshot and gex_daily.json are left untouched so a
+    one-off ticker never pollutes the banner.
     """
     settings = get_settings()
     tickers = [t.strip().lower() for t in (tickers or settings.gex_tickers.split(",")) if t.strip()]
@@ -264,18 +269,25 @@ def refresh(db: Session, tickers: list[str] | None = None) -> dict:
     if calls:
         _record_calls(db, calls, tickers)
 
-    # the DB snapshot is what /super/gex and the desk banner serve
-    _upsert_snapshot(db, "gex", out["fetched_at"][:10], out, "api:refreshGex")
-    # mirror to the legacy file so gex_daily.py / the old desk agree
-    if settings.super_dir.is_dir():
-        try:
-            (settings.super_dir / "gex_daily.json").write_text(
-                json.dumps(out, indent=1), encoding="utf-8"
-            )
-        except OSError as exc:
-            logger.warning("could not write gex_daily.json: %s", exc)
-
-    sr.invalidate_caches()
+    if persist:
+        # the DB snapshot is what /super/gex and the desk banner serve
+        _upsert_snapshot(db, "gex", out["fetched_at"][:10], out, "api:refreshGex")
+        # mirror to the legacy file so gex_daily.py / the old desk agree
+        if settings.super_dir.is_dir():
+            try:
+                (settings.super_dir / "gex_daily.json").write_text(
+                    json.dumps(out, indent=1), encoding="utf-8"
+                )
+            except OSError as exc:
+                logger.warning("could not write gex_daily.json: %s", exc)
+        sr.invalidate_caches()
+    else:
+        # ad-hoc lookup: report ONLY what was asked for, leave the desk alone
+        out["tickers"] = {
+            t.upper(): out["tickers"][t.upper()]
+            for t in tickers
+            if t.upper() in out["tickers"]
+        }
     return {
         "gex": out,
         "calls_made": calls,
