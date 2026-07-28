@@ -105,22 +105,30 @@ def read_config() -> dict:
     return json.loads(raw.lstrip("﻿"))
 
 
-def write_enabled(enabled: dict[str, bool]) -> dict:
+def write_enabled(db: Session, enabled: dict[str, bool]) -> dict:
     """Apply {tickerId: bool} across all categories, preserving every other
-    key, and rewrite the config the same way the vite middleware does."""
-    cfg = read_config()
+    key. The DB mirror is the serving source; the file is also rewritten
+    when the source repo is present because the supervisor bots read it."""
+    cfg = config_from_db(db)
+    if cfg is None:
+        raise ValueError("no super_config in the database and no source repo to import it from")
     for cat in (cfg.get("categories") or {}).values():
         for t in cat.get("tickers") or []:
             if t.get("id") in enabled:
                 t["enabled"] = bool(enabled[t["id"]])
-    # Byte-compatible with vite's JSON.stringify(cfg, null, 2) + '\n':
-    # literal UTF-8 (no \uXXXX escapes in the hand-maintained rules text)
-    # and LF line endings even on Windows.
-    config_path().write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-        newline="\n",
-    )
+    _upsert_singleton(db, "super_config", cfg, "api:setSuperConfig")
+    db.commit()
+    try:
+        if config_path().parent.is_dir():
+            # Byte-compatible with vite's JSON.stringify(cfg, null, 2) + '\n':
+            # literal UTF-8 escapes-free text and LF endings even on Windows.
+            config_path().write_text(
+                json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+                newline="\n",
+            )
+    except OSError as exc:
+        logger.warning("config mirror updated but file write failed: %s", exc)
     invalidate_caches()  # next state must reflect the new toggles
     return cfg
 
@@ -241,7 +249,12 @@ def start_supervisors() -> dict:
     restart). Categories with zero enabled tickers are skipped; a category
     that fails to spawn is reported without aborting the rest (vite parity)."""
     settings = get_settings()
-    cfg = read_config()
+    try:
+        cfg = read_config()
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise OSError(
+            f"supervisors need the source repo on this host (config unreadable: {exc})"
+        ) from exc
     started: list[str] = []
     already: list[str] = []
     failed: dict[str, str] = {}
@@ -333,6 +346,8 @@ def regenerate_engines(
     is not set, nothing is launched — the caller gets ``recent: true`` so the
     UI can confirm ("signals are fresh — go straight to the watcher?")."""
     settings = get_settings()
+    if not settings.super_dir.is_dir():
+        raise OSError("engine regeneration needs the source repo on this host")
     if db is not None and not force:
         last = last_regenerate(db)
         if last is not None:
@@ -449,9 +464,10 @@ def _safe_proc(pid: int) -> psutil.Process | None:
 
 # --- state assembly ---------------------------------------------------------
 
-def build_state(*, want_all: bool = False) -> dict:
-    """Assemble the desk state, shared across concurrent pollers via a short
-    TTL cache (single-flight: one assembly serves every waiting request)."""
+def build_state(db: Session, *, want_all: bool = False) -> dict:
+    """Assemble the desk state — served entirely from SQLite (config mirror,
+    signal rows, gex/econ snapshots) so the source repo is not required at
+    request time. Shared across concurrent pollers via a short TTL cache."""
     now = time.monotonic()
     if _STATE_CACHE["key"] == want_all and now - _STATE_CACHE["ts"] < _STATE_TTL:
         return _STATE_CACHE["value"]
@@ -459,17 +475,51 @@ def build_state(*, want_all: bool = False) -> dict:
         now = time.monotonic()
         if _STATE_CACHE["key"] == want_all and now - _STATE_CACHE["ts"] < _STATE_TTL:
             return _STATE_CACHE["value"]
-        value = _build_state_uncached(want_all=want_all)
+        value = _build_state_uncached(db, want_all=want_all)
         _STATE_CACHE.update(ts=time.monotonic(), key=want_all, value=value)
         return value
 
 
-def _build_state_uncached(*, want_all: bool = False) -> dict:
-    settings = get_settings()
-    try:
-        cfg = read_config()
-    except (OSError, json.JSONDecodeError, ValueError) as exc:
-        return {"error": f"config unreadable: {exc}"}
+def _feed_from_db(db: Session, book: str, *, want_all: bool) -> list[dict]:
+    """Central A/B feed served from super_signals rows (raw preserves the
+    all-string CSV contract). Archived rows appear only with all=1."""
+    stmt = (
+        select(SuperSignal)
+        .where(SuperSignal.book == book, SuperSignal.external_id.like("central:%"))
+        .order_by(SuperSignal.logged_at.desc().nullslast())
+        .limit(2000 if want_all else 150)
+    )
+    if not want_all:
+        stmt = stmt.where(SuperSignal.archived.is_(False))
+    rows = [dict(s.raw or {}) for s in db.scalars(stmt).all()]
+    # Exact legacy ordering: lexical DESC on "logged_at_cst|bar_time_cst".
+    rows.sort(
+        key=lambda r: f"{r.get('logged_at_cst', '')}|{r.get('bar_time_cst', '')}",
+        reverse=True,
+    )
+    return rows
+
+
+def _worker_rows_from_db(db: Session, ticker_id: str, *, cap: int = 30) -> list[dict]:
+    stmt = (
+        select(SuperSignal)
+        .where(SuperSignal.external_id.like(f"worker:{ticker_id}:%"))
+        .order_by(SuperSignal.logged_at.desc().nullslast())
+        .limit(cap)
+    )
+    return [dict(s.raw or {}) for s in db.scalars(stmt).all()]
+
+
+def _build_state_uncached(db: Session, *, want_all: bool = False) -> dict:
+    cfg = latest_payload(db, "super_config")
+    if cfg is None:
+        _bridge_once(db)
+        cfg = latest_payload(db, "super_config")
+    if cfg is None:
+        return {
+            "error": "config unreadable: no super_config mirror in the database "
+            "(run POST /super/sync once while the source repo is present)"
+        }
 
     running = _scan_running()
     categories = []
@@ -481,9 +531,7 @@ def _build_state_uncached(*, want_all: bool = False) -> dict:
             enabled = bool(t.get("enabled"))
             rows: list[dict] = []
             if enabled:
-                rows = read_worker_rows(
-                    settings.super_dir / (t.get("path") or "") / (t.get("csv") or "")
-                )
+                rows = _worker_rows_from_db(db, t.get("id") or "")
                 for row in rows:
                     if row.get("book") == "A":
                         abook.append({**row, "src": t.get("label"), "cat": key})
@@ -514,11 +562,35 @@ def _build_state_uncached(*, want_all: bool = False) -> dict:
         "abookOnTop": cfg.get("abookOnTop") is not False,
         "categories": categories,
         "abook": abook,
-        "aFeed": read_central_feed("a_signals.csv", want_all=want_all),
-        "bFeed": read_central_feed("b_signals.csv", want_all=want_all),
-        "econ": read_econ(),
-        "gex": read_gex(),
+        "aFeed": _feed_from_db(db, "A", want_all=want_all),
+        "bFeed": _feed_from_db(db, "B", want_all=want_all),
+        "econ": econ_from_db(db),
+        "gex": gex_from_db(db),
     }
+
+
+def gex_from_db(db: Session) -> dict | None:
+    payload = latest_payload(db, "gex")
+    if payload is None:
+        _bridge_once(db)
+        payload = latest_payload(db, "gex")
+    return payload
+
+
+def econ_from_db(db: Session) -> dict | None:
+    payload = latest_payload(db, "econ")
+    if payload is None:
+        _bridge_once(db)
+        payload = latest_payload(db, "econ")
+    return payload
+
+
+def config_from_db(db: Session) -> dict | None:
+    cfg = latest_payload(db, "super_config")
+    if cfg is None:
+        _bridge_once(db)
+        cfg = latest_payload(db, "super_config")
+    return cfg
 
 
 # --- SQLite history: signals + daily snapshots ------------------------------
@@ -562,6 +634,7 @@ def sync_signals(db: Session, *, include_archive: bool = True, force: bool = Tru
     for path, book in files:
         if not path.is_file() or not _file_changed(path, force=force):
             continue
+        is_archive = path.parent.name == "archive"
         rows = _read_csv_rows(path)
         file_ins = file_upd = 0
         # Pre-merge duplicate keys within the file (last row wins): the
@@ -597,6 +670,7 @@ def sync_signals(db: Session, *, include_archive: bool = True, force: bool = Tru
                 "accuracy_pct": _float_or_none(row.get("acc_strict_pct")),
                 "bar_time": (row.get("bar_time_cst") or "").strip() or None,
                 "logged_at": _parse_cst(logged),
+                "archived": is_archive,
                 "raw": {k: v for k, v in row.items() if k},
             }
             existing = db.scalar(
@@ -606,8 +680,13 @@ def sync_signals(db: Session, *, include_archive: bool = True, force: bool = Tru
                 db.add(SuperSignal(external_id=external_id, **mapped))
                 file_ins += 1
             else:
-                # outcome/outcome_at/repeats/hot live in raw and resolve later
-                if existing.raw != mapped["raw"]:
+                # outcome/outcome_at/repeats/hot live in raw and resolve later;
+                # a row seen in the archive file has rotated out of the live feed
+                changed = existing.raw != mapped["raw"]
+                if is_archive and not existing.archived:
+                    existing.archived = True
+                    changed = True
+                if changed:
                     existing.raw = mapped["raw"]
                     file_upd += 1
         db.commit()
@@ -682,16 +761,90 @@ def sync_worker_signals(db: Session, *, force: bool = True) -> dict:
     return {"inserted": inserted, "files": report}
 
 
+def sync_config_mirror(db: Session) -> int:
+    """Mirror super_research.config and the sports env file into the DB so
+    every read endpoint works without the source repo on disk."""
+    count = 0
+    try:
+        cfg = read_config()
+    except (OSError, ValueError, json.JSONDecodeError):
+        cfg = None
+    if cfg is not None:
+        count += _upsert_singleton(db, "super_config", cfg, "super_research.config")
+
+    sports_dir = get_settings().source_repo / "prediction-trade/kalshi/sports"
+    for name in ("kaslhi_sports.env", "kalshi_sports.env"):
+        path = sports_dir / name
+        if not path.is_file():
+            continue
+        env: dict[str, str] = {}
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            if any(s in key.upper() for s in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
+                continue
+            env.setdefault(key, value.strip())
+        count += _upsert_singleton(db, "sports_env", env, name)
+        break
+    db.commit()
+    return count
+
+
+def _upsert_singleton(db: Session, kind: str, payload: dict, source: str) -> int:
+    """Non-daily mirror rows use the fixed snapshot_date 'current'."""
+    row = db.scalar(
+        select(DailySnapshot).where(
+            DailySnapshot.kind == kind, DailySnapshot.snapshot_date == "current"
+        )
+    )
+    if row is None:
+        db.add(DailySnapshot(kind=kind, snapshot_date="current", payload=payload, source_file=source))
+        return 1
+    if row.payload != payload:
+        row.payload = payload
+        row.source_file = source
+        row.fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        return 1
+    return 0
+
+
+def latest_payload(db: Session, kind: str) -> dict | None:
+    row = db.scalar(
+        select(DailySnapshot)
+        .where(DailySnapshot.kind == kind)
+        .order_by(DailySnapshot.fetched_at.desc())
+        .limit(1)
+    )
+    return row.payload if row else None
+
+
 def sync_everything(db: Session, *, include_archive: bool = True, force: bool = True) -> dict:
     """One pass over every signal source: central ledgers, worker CSVs,
-    gex/econ snapshots. Callers must hold no session-level locks; this
-    serializes on _SYNC_LOCK itself."""
+    gex/econ snapshots, config mirrors. Callers must hold no session-level
+    locks; this serializes on _SYNC_LOCK itself."""
     with _SYNC_LOCK:
-        return {
+        result = {
             "signals": sync_signals(db, include_archive=include_archive, force=force),
             "workers": sync_worker_signals(db, force=force),
             "snapshots": sync_snapshots(db),
+            "mirrors": sync_config_mirror(db),
         }
+    invalidate_caches()
+    return result
+
+
+def _bridge_once(db: Session) -> None:
+    """Lazy ingest bridge: when the DB has no mirror yet but the source repo
+    is present, pull everything in before serving. Harmless no-op when the
+    repo is gone — that is the fully-detached mode."""
+    if get_settings().super_dir.is_dir():
+        try:
+            sync_everything(db, force=False)
+        except Exception:  # serving must not die on a broken bridge
+            logger.exception("ingest bridge failed")
 
 
 def sync_snapshots(db: Session) -> dict:

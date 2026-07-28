@@ -184,26 +184,17 @@ def btc_sync_trades(
 # --- sports endpoints ------------------------------------------------------
 
 @router.get("/sports/config", operation_id="getSportsBotConfig")
-def sports_config() -> dict:
-    """Non-secret sports engine configuration (from the tracked env file —
-    note the load-bearing 'kaslhi' filename typo in the source repo)."""
+def sports_config(db: Session = Depends(get_db)) -> dict:
+    """Non-secret sports engine configuration, served from the DB mirror of
+    the tracked env file (ingested by the sync bridge; secret-looking keys
+    are stripped at ingest)."""
+    from app.services import super_research as super_svc
+
     settings = get_settings()
-    sports_dir = settings.source_repo / "prediction-trade/kalshi/sports"
-    config: dict[str, str] = {}
-    for name in ("kaslhi_sports.env", "kalshi_sports.env"):
-        path = sports_dir / name
-        if path.is_file():
-            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                # Belt and braces: never expose a secret-looking key.
-                if any(s in key.upper() for s in ("KEY", "SECRET", "TOKEN", "PASSWORD")):
-                    continue
-                config.setdefault(key, value.strip())
-            break
+    config = super_svc.latest_payload(db, "sports_env")
+    if config is None:
+        super_svc._bridge_once(db)
+        config = super_svc.latest_payload(db, "sports_env") or {}
     spec = get_bot("sports")
     return {
         "bot": spec.name,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Float, Index, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -32,6 +32,9 @@ class SuperSignal(Base):
     accuracy_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     bar_time: Mapped[str | None] = mapped_column(String(64), nullable=True)  # CST as recorded
     logged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # True when the row came from (or has rotated into) the weekly archive
+    # ledger — the live feeds exclude archived rows unless ?all=1.
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

@@ -94,8 +94,12 @@ def test_gex_and_econ_endpoints(client, super_dir):
     econ = client.get("/api/v1/super/econ").json()
     assert econ["high_impact"] is False
 
+    # Detached serving: deleting the source file does NOT lose the data —
+    # the DB snapshot keeps answering.
     (super_dir / "gex_daily.json").unlink()
-    assert client.get("/api/v1/super/gex").status_code == 404
+    resp = client.get("/api/v1/super/gex")
+    assert resp.status_code == 200
+    assert resp.json()["tickers"]["SPY"]["net_gex"] == -9178182877
 
 
 def test_sync_and_query_signals(client, super_dir):

@@ -34,16 +34,17 @@ compat_router = APIRouter(prefix="/super", include_in_schema=False)
 
 # --- state / control (vite-compatible shapes) ------------------------------
 
-def _state(request: Request) -> dict:
+def _state(request: Request, db: Session) -> dict:
     want_all = request.query_params.get("all") in ("1", "true")
-    return svc.build_state(want_all=want_all)
+    return svc.build_state(db, want_all=want_all)
 
 
 @router.get("/state", operation_id="getSuperState")
-def get_state(request: Request) -> dict:
-    """Full desk state: categories/tickers with live worker rows, A/B feeds,
-    econ + gex blobs. Pass ?all=1 to merge the archive ledgers."""
-    return _state(request)
+def get_state(request: Request, db: Session = Depends(get_db)) -> dict:
+    """Full desk state served from SQLite (config mirror, signal rows,
+    gex/econ snapshots) — the source repo is not needed at request time.
+    Pass ?all=1 to include the archived ledger rows."""
+    return _state(request, db)
 
 
 @router.post("/on", operation_id="superOn")
@@ -64,40 +65,43 @@ def super_off(payload: SuperStopRequest | None = None) -> dict:
 
 
 @router.post("/config", operation_id="setSuperConfig")
-def set_config(payload: SuperConfigUpdate) -> dict:
+def set_config(payload: SuperConfigUpdate, db: Session = Depends(get_db)) -> dict:
     try:
-        svc.write_enabled(payload.enabled)
+        svc.write_enabled(db, payload.enabled)
     except (OSError, ValueError) as exc:
         raise HTTPException(status_code=500, detail=f"config write failed: {exc}")
     return {"ok": True}
 
 
 @router.get("/config", operation_id="getSuperConfig")
-def get_config() -> dict:
-    try:
-        return svc.read_config()
-    except (OSError, ValueError) as exc:
-        raise HTTPException(status_code=500, detail=f"config unreadable: {exc}")
+def get_config(db: Session = Depends(get_db)) -> dict:
+    cfg = svc.config_from_db(db)
+    if cfg is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no super_config in the database (sync once with the source repo present)",
+        )
+    return cfg
 
 
 # --- GEX / econ ------------------------------------------------------------
 
 @router.get("/gex", operation_id="getGex")
-def get_gex() -> dict:
-    """Latest merged GEX view (gex_daily.json passthrough). This backend
-    never calls the flashAlpha API — the 09:00 CST scheduled job owns the
-    5-requests/day free-tier budget."""
-    gex = svc.read_gex()
+def get_gex(db: Session = Depends(get_db)) -> dict:
+    """Latest merged GEX view, served from the DB snapshot mirror. This
+    backend never calls the flashAlpha API — the 09:00 CST scheduled job
+    owns the 5-requests/day free-tier budget."""
+    gex = svc.gex_from_db(db)
     if gex is None:
-        raise HTTPException(status_code=404, detail="gex_daily.json not available yet")
+        raise HTTPException(status_code=404, detail="no GEX snapshot in the database yet")
     return gex
 
 
 @router.get("/econ", operation_id="getEcon")
-def get_econ() -> dict:
-    econ = svc.read_econ()
+def get_econ(db: Session = Depends(get_db)) -> dict:
+    econ = svc.econ_from_db(db)
     if econ is None:
-        raise HTTPException(status_code=404, detail="econ_today.json not available yet")
+        raise HTTPException(status_code=404, detail="no econ snapshot in the database yet")
     return econ
 
 
@@ -128,14 +132,17 @@ def regenerate(
 
 @router.post("/gex/reload", operation_id="reloadGex")
 def reload_gex(db: Session = Depends(get_db)) -> dict:
-    """Re-read gex_daily.json from disk and store today's snapshot in the
-    DB. Deliberately does NOT call the flashAlpha API (free tier is 5
-    requests/day, owned by the 09:00 CST scheduled job)."""
-    with svc._SYNC_LOCK:
-        result = svc.sync_snapshots(db)
-    gex = svc.read_gex()
+    """Re-ingest gex_daily.json from disk (when the source repo is present)
+    and serve the latest DB snapshot. Deliberately does NOT call the
+    flashAlpha API (free tier is 5 requests/day, owned by the 09:00 CST
+    scheduled job)."""
+    result = {"upserted": 0}
+    if svc.get_settings().super_dir.is_dir():
+        with svc._SYNC_LOCK:
+            result = svc.sync_snapshots(db)
+    gex = svc.gex_from_db(db)
     if gex is None:
-        raise HTTPException(status_code=404, detail="gex_daily.json not available yet")
+        raise HTTPException(status_code=404, detail="no GEX snapshot in the database yet")
     return {"reloaded": True, "snapshots": result, "gex": gex}
 
 
@@ -144,6 +151,10 @@ def refresh_econ() -> dict:
     """Regenerate econ_today.json (keyless: hardcoded calendar + one
     yfinance yields fetch, cached per day by the script itself)."""
     settings = get_settings()
+    if not settings.super_dir.is_dir():
+        raise HTTPException(
+            status_code=503, detail="econ refresh needs the source repo on this host"
+        )
     python = str(settings.super_python)
     if not Path(python).is_file():
         python = sys.executable
@@ -227,8 +238,8 @@ def get_snapshots(
 # --- legacy-compatible aliases (/api/super/*) ------------------------------
 
 @compat_router.get("/state")
-def compat_state(request: Request) -> dict:
-    return _state(request)
+def compat_state(request: Request, db: Session = Depends(get_db)) -> dict:
+    return _state(request, db)
 
 
 @compat_router.post("/on")
@@ -237,6 +248,6 @@ def compat_on() -> dict:
 
 
 @compat_router.post("/config")
-def compat_config(payload: SuperConfigUpdate) -> dict:
-    svc.write_enabled(payload.enabled)
+def compat_config(payload: SuperConfigUpdate, db: Session = Depends(get_db)) -> dict:
+    svc.write_enabled(db, payload.enabled)
     return {"ok": True}

@@ -52,3 +52,22 @@ def init_db() -> None:
     from app import models  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _migrate(engine)
+
+
+def _migrate(bind) -> None:
+    """Tiny additive migrations — create_all never alters existing tables."""
+    from sqlalchemy import text
+
+    with bind.begin() as conn:
+        cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(super_signals)")).fetchall()
+        }
+        if cols and "archived" not in cols:
+            conn.execute(
+                text(
+                    "ALTER TABLE super_signals "
+                    "ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0"
+                )
+            )
