@@ -58,7 +58,7 @@ def create_app() -> FastAPI:
         # Shared-key gate (VIDURA_API_KEY). Docs and health stay open so the
         # Swagger UI can be browsed; every /api route requires the header.
         expected = get_settings().api_key
-        if expected and request.url.path.startswith(settings.api_v1_prefix):
+        if expected and request.url.path.startswith("/api"):
             import hmac as _hmac
 
             provided = request.headers.get("X-API-Key", "")
@@ -67,6 +67,12 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     app.include_router(api_router, prefix=settings.api_v1_prefix)
+
+    # Legacy-compatible /api/super/* aliases: exact vite-middleware shapes so
+    # the existing SuperSite frontend can point straight at this backend.
+    from app.api.v1.super import compat_router
+
+    app.include_router(compat_router, prefix="/api")
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception):

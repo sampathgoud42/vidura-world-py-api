@@ -86,6 +86,8 @@ tests/                   pytest E2E suite over TestClient + temp SQLite
 | `wellness_profiles` | current wellness preferences (mirror of `wellness-profile.json`) |
 | `wellness_entries` | time-stamped wellness data, queried over a rolling window (default 60 days) |
 | `tennis_predictions` | stored model outputs served to clients |
+| `super_signals` | A/B-book super_research signal history (live + archive ledgers) |
+| `daily_snapshots` | daily GEX / econ JSON history (`gex`, `econ`, `gex_raw_<ticker>`) |
 
 ## API surface (all under `/api/v1`)
 
@@ -111,6 +113,18 @@ folder JSON on first read, writes back on update),
 **Tennis models** — `GET /models/tennis`,
 `GET/POST /models/tennis/{model_id}/predictions`.
 
+**Super-research desk** — `GET /super/state` (full desk state for the
+SuperSite app: categories/tickers with live worker rows, A/B signal feeds,
+econ + GEX blobs; `?all=1` merges the archive ledgers),
+`POST /super/on` / `POST /super/off` (start/stop category supervisors;
+detached processes that survive API restarts), `GET/POST /super/config`
+(ticker enable toggles), `GET /super/gex`, `GET /super/econ`,
+`POST /super/econ/refresh`, `POST /super/sync` (ledgers + snapshots into
+SQLite), `GET /super/signals` (filter by book/category/ticker/grade/days),
+`GET /super/snapshots?kind=gex|econ|gex_raw_spy` (daily history).
+Legacy-compatible aliases at `/api/super/state|on|config` serve the exact
+vite-middleware shapes, so the existing frontend can point straight here.
+
 ## Safety model
 
 - `VIDURA_PAPER_ONLY=true` (default): every bot start forces
@@ -125,6 +139,9 @@ folder JSON on first read, writes back on update),
   (btc15: CWD; btc60: `BTC_CUSTOMER*` env; sports: argv + `SPORTS_*` env).
 - The Kalshi endpoint in this API is read-only (balance/status/positions/
   fills/settlements); order placement stays inside the bots.
+- The GEX endpoints never call the flashAlpha API (free tier: 5 requests/
+  day, 2 of which the 09:00 CST scheduled job uses) — they only read the
+  JSON files that job produces.
 
 ## Known data caveats (inherited)
 

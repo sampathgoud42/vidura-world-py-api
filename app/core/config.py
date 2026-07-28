@@ -31,6 +31,17 @@ class Settings(BaseSettings):
     # python; bots only need requests/cryptography which are installed here).
     bot_python: Path | None = None
 
+    # Python for super_research supervisors/workers. They need yfinance and
+    # friends, which live in the system install that already runs them daily
+    # (schtask + bots.py), not in this venv.
+    super_python: Path = Path(
+        "C:/Users/sampa/AppData/Local/Python/pythoncore-3.14-64/python.exe"
+    )
+
+    @property
+    def super_dir(self) -> Path:
+        return self.source_repo / "super_research"
+
     # --- runtime dirs ---------------------------------------------------
     var_dir: Path = Path(__file__).resolve().parents[2] / "var"
 
