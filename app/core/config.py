@@ -34,8 +34,12 @@ class Settings(BaseSettings):
     # platform sets PORT (Render/Cloud Run both do) unless set explicitly.
     cloud_mode: bool = False
 
-    # --- source repo the bots live in ----------------------------------
-    source_repo: Path = Path("D:/_projects/38trades-py-claude")
+    # --- trading runtime (vendored) --------------------------------------
+    # The bot scripts, signal engines, prediction models and their config
+    # live INSIDE this project under runtime/ — nothing is read from the
+    # original 38trades-py-claude checkout. Override only if you keep the
+    # runtime somewhere else.
+    source_repo: Path = Path(__file__).resolve().parents[2] / "runtime"
     customers_root: Path = Path("D:/_projects/customers")
 
     # Python used to launch bot subprocesses (defaults to this app's venv

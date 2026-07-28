@@ -1,0 +1,2 @@
+timestamp,ticker,BTC_TO_BEAT,BTC_SPOT_PRICE_AT_BUY,BTC_SPOT_PRICE_AT_SELL,mode,direction,actual_direction_previous,contracts,entry_price,exit_price,pnl,result,portfolio_value,MAX_LOSS_PCT,MAX_PROFIT_PCT
+2026-05-18 11:47,KXBTC15M-26MAY181300-00,76384.43,76401.82,,BUY,yes,yes,4,2.36,0.0,0.0,NO_SL_TRADE,35.00,,

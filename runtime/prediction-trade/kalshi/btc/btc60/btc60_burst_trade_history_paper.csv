@@ -1,0 +1,1 @@
+timestamp,event,ticker,signal,side,strike,contracts,entry_cents,exit_cents,exit_reason,pnl_dollars,bankroll_after,banked_total,spot_at_entry,signal_acc,utc_hour

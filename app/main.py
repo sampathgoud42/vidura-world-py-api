@@ -170,7 +170,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version=settings.app_version,
         description=(
-            "Multi-user backend for the 38trades trading bots (Kalshi BTC "
+            "Multi-user backend for the vendored trading runtime (Kalshi BTC "
             "15m/60m, multi-sport), tennis prediction models, and the "
             "wellness app. SQLite persistence, per-user credential folders."
         ),

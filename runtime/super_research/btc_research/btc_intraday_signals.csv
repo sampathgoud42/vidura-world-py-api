@@ -1,0 +1,7 @@
+logged_at_cst,book,signal,direction,confluence,window,noise_k,vol_mult,acc_strict_pct,acc_tp_before_sl_pct,bt_trades,bar_time_cst,signal_price,entry_ref,target_price,stop_price,stop_deadline_cst,target_deadline_cst,vwap,y_poc,pivot,atr,volume,vol_vs_med20
+2026-07-17 16:25:39,B,poc_reject_up+adi_up+hist_turn_up+strong_close,LONG,2,eve_16_24,0.6,0.8,85.7,85.7,7,2026-07-17 16:20,64138.72,64138.72,64218.72,64088.72,16:55,17:25,63410.77,64125.0,63874.55,70.354,208070656,2.66
+2026-07-27 23:00:27,B,poc_reject_up+delta_surge+strong_close,LONG,8,us_8_16,1.2,0.8,88.9,88.9,9,2026-07-27 08:35,65384.2,65384.2,65547.66,65220.74,09:40,09:40,65224.21,65375.0,64987.98,107.086,111319040,2.77
+2026-07-27 23:00:27,B,poc_reject_up+delta_surge+strong_close,LONG,8,us_8_16,1.2,0.8,88.9,88.9,9,2026-07-27 08:40,65615.39,65615.39,65779.43,65451.35,09:45,09:45,65237.67,65375.0,64987.98,117.417,286746624,6.12
+2026-07-28 05:40:33,A,vwap_reclaim+adi_up+macd_x_up_neg+strong_close,LONG,4,full_day,1.2,0.8,100.0,100.0,7,2026-07-28 05:35,63410.44,63410.44,63568.97,63251.92,06:40,06:40,63407.59,63125.0,63982.72,62.387,302395392,26.59
+2026-07-28 05:40:33,B,vwap_reclaim+adi_up+macd_x_up_neg,LONG,22,full_day,1.2,0.8,88.9,88.9,9,2026-07-28 05:35,63410.44,63410.44,63568.97,63251.92,06:40,06:40,63407.59,63125.0,63982.72,62.387,302395392,26.59
+2026-07-28 07:54:58,B,vwap_reclaim+adi_up+macd_x_up+strong_close,LONG,1,full_day,1.2,0.8,87.5,87.5,8,2026-07-28 07:45,63480.38,63480.38,63639.08,63321.68,08:50,08:50,63411.94,63225.0,63979.27,73.29,3653632,1.08

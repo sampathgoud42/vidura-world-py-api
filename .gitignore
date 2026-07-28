@@ -11,3 +11,19 @@ test_app.db
 *.db-wal
 .env
 secrets/
+
+# --- vendored runtime: never commit secrets or machine-local state --------
+# THIS REPO IS PUBLIC. flashalpha.env holds a live API key.
+runtime/**/*.env
+# ...but the two NON-secret runtime configs must ship so a fresh clone runs
+!runtime/prediction-trade/kalshi/sports/kaslhi_sports.env
+!runtime/prediction-trade/kalshi/btc/btc.env
+runtime/**/*.pem
+runtime/**/*.lock
+runtime/**/*.log
+runtime/**/*.out
+runtime/**/*.err
+runtime/**/__pycache__/
+runtime/**/cache/
+runtime/**/all_configs.csv
+
