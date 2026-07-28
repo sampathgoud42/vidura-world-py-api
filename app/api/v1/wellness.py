@@ -37,7 +37,7 @@ SELECTION_OPTIONS: dict[str, list[str]] = {
 
 
 @router.get("/options", operation_id="getWellnessOptions")
-def get_options() -> dict[str, list[str]]:
+def get_options(user: User = Depends(get_user_or_404)) -> dict[str, list[str]]:
     return SELECTION_OPTIONS
 
 

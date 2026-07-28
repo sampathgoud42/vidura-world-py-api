@@ -1,11 +1,19 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 BotKey = Literal["btc15", "btc60", "sports", "manual"]
+
+
+def to_naive_utc(value: datetime | None) -> datetime | None:
+    """The DB stores naive-UTC; aware client datetimes must be converted,
+    not silently stripped of their offset."""
+    if value is not None and value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
 
 
 class TradeCreate(BaseModel):
@@ -26,6 +34,8 @@ class TradeCreate(BaseModel):
     opened_at: datetime | None = None
     closed_at: datetime | None = None
     raw: dict | None = None
+
+    _naive_utc = field_validator("opened_at", "closed_at")(to_naive_utc)
 
 
 class TradeOut(TradeCreate):

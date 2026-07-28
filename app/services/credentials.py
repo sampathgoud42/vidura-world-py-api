@@ -100,7 +100,9 @@ def verify_password(user_root_folder: str, password: str) -> bool:
         sam = paths.resolve_user_file(user_root_folder, ".sam")
         if sam.is_file():
             stored = sam.read_text(encoding="utf-8").strip()
-            ok = hmac.compare_digest(stored, password.strip())
+            # Compare as bytes: compare_digest(str, str) raises TypeError on
+            # non-ASCII input, which would surface as a 500.
+            ok = hmac.compare_digest(stored.encode("utf-8"), password.strip().encode("utf-8"))
     except (paths.PathSecurityError, ValueError, OSError):
         ok = False
     if not ok:

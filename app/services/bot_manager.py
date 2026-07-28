@@ -17,8 +17,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import signal
 import subprocess
 import sys
+import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -29,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.core import paths
 from app.core.config import get_settings
 from app.models import BotRun, User
+from app.services import credentials as creds_svc
 from app.services.bot_registry import BotSpec, BotVersion, get_bot, script_path
 
 logger = logging.getLogger(__name__)
@@ -37,6 +42,11 @@ _LAUNCHER = Path(__file__).with_name("bot_launcher.py")
 
 # Live process handles for runs started by THIS api process (run_id -> Popen).
 _PROCESSES: dict[int, subprocess.Popen] = {}
+
+# Serializes the check-then-launch section of start_bot: sync endpoints run
+# concurrently in the threadpool, so without this two simultaneous start
+# requests could both pass the single-instance check (TOCTOU).
+_START_LOCK = threading.Lock()
 
 
 class BotManagerError(Exception):
@@ -116,24 +126,21 @@ def _launch_plan(
         if env_file.is_file():
             env["KALSHI_SPORTS_SECRETS"] = str(env_file)
         env.setdefault("SPORT_LOG_DIR", str(log_dir))
+        # Pin per-bot CSV outputs into the user's folder (matched by ingest).
+        env.setdefault("MAIN_TRADE_CSV", str(trade_dir / "trade_history_main.csv"))
+        env.setdefault("MAIN_PAPER_CSV", str(trade_dir / "paper_trades_main.csv"))
+        env.setdefault("BASEBALL_TRADE_CSV", str(trade_dir / "trade_history_baseball.csv"))
     else:  # pragma: no cover - registry misconfiguration
         raise BotManagerError(f"Unknown launch style {spec.launch_style}", 500)
     return argv, cwd, env
 
 
 def _pid_alive(run: BotRun) -> bool:
-    if run.pid is None:
+    proc = _run_process(run)
+    if proc is None:
         return False
     try:
-        proc = psutil.Process(run.pid)
-        if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
-            return False
-        # Guard against PID reuse: the process must be at least as old as
-        # the recorded start (with 60s of clock slack). started_at is naive UTC.
-        started = run.started_at.replace(tzinfo=timezone.utc)
-        return proc.create_time() <= started.timestamp() + 60
-    except psutil.NoSuchProcess:
-        return False
+        return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
     except psutil.Error:
         # Inconclusive — report alive rather than allow a double start.
         return True
@@ -177,6 +184,30 @@ def running_run(db: Session, bot_key: str, user_id: str) -> BotRun | None:
     return None
 
 
+def _check_paper_conflict(user: User) -> None:
+    """The bots load the customer .env with override=True, so a stray
+    DRY_RUN_MODE=FALSE in the user's folder would silently re-enable live
+    trading underneath our forced paper env.  Refuse to start instead."""
+    if not get_settings().paper_only:
+        return
+    try:
+        creds = creds_svc.load_kalshi_credentials(user.user_root_folder)
+    except creds_svc.CredentialsError:
+        return  # no .env at all -> nothing can override our paper flags
+    from dotenv import dotenv_values
+
+    values = {k: (v or "") for k, v in dotenv_values(creds.env_file).items()}
+    for key in ("DRY_RUN_MODE", "BOT152_DRY_RUN", "MAIN_PAPER"):
+        raw = values.get(key, "").strip().upper()
+        if raw in ("FALSE", "0", "NO"):
+            raise BotManagerError(
+                f"{creds.env_file.name} sets {key}={raw}, which would override "
+                "this server's paper-only mode inside the bot process. Remove "
+                "the line or set it to TRUE before starting.",
+                409,
+            )
+
+
 def start_bot(
     db: Session,
     user: User,
@@ -190,60 +221,81 @@ def start_bot(
 
     if get_settings().paper_only and mode not in ("paper", "mock"):
         raise BotManagerError("This server is configured paper-only; mode must be 'paper' or 'mock'", 403)
+    _check_paper_conflict(user)
 
-    existing = running_run(db, bot_key, user.user_id)
-    if existing is not None:
-        raise BotManagerError(
-            f"Bot {bot_key} already running for user {user.username} (run {existing.id})", 409
+    with _START_LOCK:
+        existing = running_run(db, bot_key, user.user_id)
+        if existing is not None:
+            raise BotManagerError(
+                f"Bot {bot_key} already running for user {user.username} (run {existing.id})", 409
+            )
+
+        argv, cwd, env = _launch_plan(spec, ver, user)
+
+        settings = get_settings()
+        ts = _utcnow().strftime("%Y%m%d_%H%M%S")
+        safe_user = re.sub(r"[^A-Za-z0-9_-]", "_", user.username)[:64]
+        log_file = settings.log_dir / f"{bot_key}_{ver.version}_{safe_user}_{ts}.log"
+
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+
+        log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
+        try:
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(cwd),
+                env=env,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except OSError as exc:
+            raise BotManagerError(f"Failed to launch bot process: {exc}", 500) from exc
+        finally:
+            log_handle.close()  # child holds its own handle
+
+        # Fail fast on immediate crashes (bad .env, lock conflict, import
+        # error) instead of reporting a phantom "running" row.
+        time.sleep(1.0)
+        code = proc.poll()
+        if code is not None and code != 0:
+            tail = ""
+            try:
+                tail = "\n".join(
+                    log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
+                )
+            except OSError:
+                pass
+            raise BotManagerError(
+                f"Bot process exited immediately with code {code}. Last log lines:\n{tail}", 502
+            )
+
+        run = BotRun(
+            user_id=user.user_id,
+            bot_key=bot_key,
+            bot_version=ver.version,
+            script_path=str(script_path(spec, ver)),
+            pid=proc.pid,
+            mode=mode,
+            status="running",
+            log_file=str(log_file),
+            extra={"argv": argv[2:], "cwd": str(cwd)},
         )
-
-    argv, cwd, env = _launch_plan(spec, ver, user)
-
-    settings = get_settings()
-    ts = _utcnow().strftime("%Y%m%d_%H%M%S")
-    log_file = settings.log_dir / f"{bot_key}_{ver.version}_{user.username}_{ts}.log"
-
-    creationflags = 0
-    if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-
-    log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=str(cwd),
-            env=env,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-    except OSError as exc:
-        raise BotManagerError(f"Failed to launch bot process: {exc}", 500) from exc
-    finally:
-        log_handle.close()  # child holds its own handle
-
-    run = BotRun(
-        user_id=user.user_id,
-        bot_key=bot_key,
-        bot_version=ver.version,
-        script_path=str(script_path(spec, ver)),
-        pid=proc.pid,
-        mode=mode,
-        status="running",
-        log_file=str(log_file),
-        extra={"argv": argv[2:], "cwd": str(cwd)},
-    )
-    db.add(run)
-    db.commit()
-    db.refresh(run)
-    _PROCESSES[run.id] = proc
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+        _PROCESSES[run.id] = proc
     logger.info("Started %s %s for %s (pid %s)", bot_key, ver.version, user.username, proc.pid)
     return run
 
 
 def stop_bot(db: Session, bot_key: str, *, user_id: str | None = None, run_id: int | None = None) -> list[BotRun]:
-    """Terminate running processes for the bot (whole process tree)."""
+    """Stop running processes for the bot: graceful break first (so bot
+    finally-blocks can cancel resting orders and release lock files), then a
+    hard terminate of the whole tree."""
     runs = reconcile_runs(db, bot_key=bot_key, user_id=user_id)
     targets = [r for r in runs if r.status == "running" and (run_id is None or r.id == run_id)]
     if not targets:
@@ -252,29 +304,77 @@ def stop_bot(db: Session, bot_key: str, *, user_id: str | None = None, run_id: i
         _terminate_tree(run)
         run.status = "stopped"
         run.stopped_at = _utcnow()
+        extra = dict(run.extra or {})
+        watchdogs = _find_watchdogs(bot_key)
+        if watchdogs:
+            # The btc60 bots have an optional detached PowerShell watchdog
+            # that relaunches them ~30s after a kill. Never kill a process we
+            # did not start — surface it instead.
+            extra["warning"] = (
+                f"External watchdog process(es) alive (pids {watchdogs}); they may "
+                "relaunch this bot outside API control. Stop the watchdog manually."
+            )
+        run.extra = extra
         _PROCESSES.pop(run.id, None)
     db.commit()
     return targets
 
 
-def _terminate_tree(run: BotRun) -> None:
+def _find_watchdogs(bot_key: str) -> list[int]:
+    if bot_key != "btc60":
+        return []
+    pids = []
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+        except psutil.Error:
+            continue
+        if "watchdog_btc60" in cmdline:
+            pids.append(proc.info["pid"])
+    return pids
+
+
+def _run_process(run: BotRun) -> psutil.Process | None:
+    """Resolve the run's psutil process, guarding against PID reuse."""
     if run.pid is None:
-        return
+        return None
     try:
-        parent = psutil.Process(run.pid)
-    except psutil.NoSuchProcess:
+        proc = psutil.Process(run.pid)
+    except psutil.Error:
+        return None
+    try:
+        started = run.started_at.replace(tzinfo=timezone.utc)
+        if proc.create_time() > started.timestamp() + 60:
+            return None  # PID was recycled by an unrelated process
+    except psutil.Error:
+        pass  # inconclusive: treat as ours (fail-closed against double start)
+    return proc
+
+
+def _terminate_tree(run: BotRun) -> None:
+    parent = _run_process(run)
+    if parent is None:
         return
     procs = [parent]
     try:
         procs += parent.children(recursive=True)
     except psutil.Error:
         pass
-    for p in procs:
+    # Graceful phase: CTRL_BREAK to the process group lets asyncio bots run
+    # their finally blocks (cancel orders, release PID locks).
+    if os.name == "nt":
+        try:
+            os.kill(parent.pid, signal.CTRL_BREAK_EVENT)
+            parent.wait(timeout=8)
+        except (OSError, psutil.Error):
+            pass
+    survivors = [p for p in procs if p.is_running()]
+    for p in survivors:
         try:
             p.terminate()
         except psutil.Error:
             pass
-    _, alive = psutil.wait_procs(procs, timeout=5)
+    _, alive = psutil.wait_procs(survivors, timeout=5)
     for p in alive:
         try:
             p.kill()

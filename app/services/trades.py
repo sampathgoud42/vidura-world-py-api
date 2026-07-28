@@ -26,7 +26,7 @@ def query_trades(
     db: Session,
     *,
     user_id: str | None = None,
-    bot_key: str | None = None,
+    bot_key: str | list[str] | None = None,
     bot_version: str | None = None,
     status: str | None = None,
     days: int | None = None,
@@ -36,7 +36,9 @@ def query_trades(
     stmt = select(Trade)
     if user_id:
         stmt = stmt.where(Trade.user_id == user_id)
-    if bot_key:
+    if isinstance(bot_key, list):
+        stmt = stmt.where(Trade.bot_key.in_(bot_key))
+    elif bot_key:
         stmt = stmt.where(Trade.bot_key == bot_key)
     if bot_version:
         stmt = stmt.where(Trade.bot_version == bot_version)

@@ -94,7 +94,9 @@ def _map_btc15_v2(row: dict, version: str) -> dict | None:
         "price_cents": _f(row.get("entry_price")),
         "pnl_usd": pnl,
         "status": status,
-        "is_mock": (row.get("mode") or "").strip().upper() != "LIVE",
+        # The CSV 'mode' column records the entry style (BUY/FLIP-BUY), not
+        # paper-vs-live, so we cannot infer live trades from it.
+        "is_mock": True,
         "opened_at": opened,
         "closed_at": opened,
         "raw": _clean_raw(row),
@@ -174,15 +176,27 @@ def _map_sports(row: dict, *, is_paper: bool, source: str) -> dict | None:
         status = "won" if pnl > 0 else "lost"
     else:
         status = "closed"
-    closed = _parse_ts(row.get("ts_close", ""), ("%Y-%m-%d %H:%M:%S",)) if status != "open" else None
+    closed = (
+        _parse_ts(
+            row.get("ts_close", ""),
+            ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ"),
+        )
+        if status != "open"
+        else None
+    )
     fill = _f(row.get("fill_price")) or _f(row.get("buy_price"))
     contracts = _i(row.get("contracts"))
     return {
         "bot_key": "sports",
         "bot_version": source,
-        "external_id": f"sports:{source}:{ts_epoch}",
+        # ts_epoch is the bots' row key, but real ledgers contain duplicate
+        # ts_epoch values for distinct trades, so ticker joins the key and
+        # sync_trades adds an occurrence suffix for exact repeats. The key
+        # must NOT include the source tag: the same ledger can be visible
+        # under two filenames (trade_history.csv vs trade_history_sports.csv).
+        "external_id": f"sports:{ts_epoch}:{ticker}",
         "ticker": ticker,
-        "market_title": (row.get("name") or row.get("player") or "").strip() or None,
+        "market_title": (row.get("name") or row.get("player") or row.get("team") or "").strip() or None,
         "side": "yes",  # sports bots only ever buy YES
         "action": "buy",
         "contracts": contracts,
@@ -221,6 +235,7 @@ def _candidate_files(user: User, bot_key: str) -> list[tuple[Path, str]]:
         out.append((trade_dir / "paper_trades_main.csv", "sports_main_paper"))
         out.append((trade_dir / "trade_history_sports.csv", "sports_v1_live"))
         out.append((trade_dir / "trade_history.csv", "sports_v1_live"))
+        out.append((trade_dir / "trade_history_baseball.csv", "sports_v2_live"))
     return [(p, tag) for p, tag in out if p.is_file()]
 
 
@@ -245,10 +260,18 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
     for path, tag in _candidate_files(user, bot_key):
         rows = _read_rows(path)
         file_ins = file_upd = 0
+        seen: dict[str, int] = {}
         for row in rows:
             mapped = _map_row(tag, row)
             if mapped is None:
                 continue
+            # Row order in the bot CSVs is stable (in-place updates, appends
+            # at the end), so an occurrence index disambiguates real
+            # duplicate keys deterministically across re-syncs.
+            base_id = mapped["external_id"]
+            n = seen[base_id] = seen.get(base_id, 0) + 1
+            if n > 1:
+                mapped["external_id"] = f"{base_id}#{n}"
             existing = db.scalar(
                 select(Trade).where(
                     Trade.user_id == user.user_id,
@@ -261,7 +284,11 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
                 db.add(Trade(user_id=user.user_id, **mapped))
                 file_ins += 1
             else:
-                # Sports CSVs update rows in place (OPEN -> CLOSED).
+                # Sports CSVs update rows in place (OPEN -> CLOSED). Never
+                # downgrade a settled row back to open — a stale copy of the
+                # same ledger under another filename must not erase P&L.
+                if mapped.get("status") == "open" and existing.status != "open":
+                    continue
                 changed = False
                 for field in ("status", "pnl_usd", "closed_at", "price_cents", "cost_usd", "raw"):
                     new = mapped.get(field)

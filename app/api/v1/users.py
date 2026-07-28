@@ -6,11 +6,37 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_user_or_404
 from app.core import paths
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.models import User
 from app.schemas.user import UserCreate, UserOut
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _check_root_allowed(root: str) -> None:
+    """Unless explicitly disabled, user folders must live under the
+    configured customers root — the API must not become an arbitrary-folder
+    credential reader."""
+    settings = get_settings()
+    if settings.allow_any_root:
+        return
+    try:
+        native = paths.normalize_root(root).resolve()
+        allowed = settings.customers_root.resolve()
+        if native != allowed and allowed not in native.parents:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"user_root_folder must be inside {allowed} "
+                    "(set VIDURA_ALLOW_ANY_ROOT=true to lift this restriction)"
+                ),
+            )
+    except (ValueError, OSError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid user_root_folder: {exc}",
+        )
 
 
 def _to_out(user: User) -> UserOut:
@@ -33,6 +59,7 @@ def get_users(db: Session = Depends(get_db)) -> list[UserOut]:
     status_code=status.HTTP_201_CREATED,
 )
 def create_user(payload: UserCreate, db: Session = Depends(get_db)) -> UserOut:
+    _check_root_allowed(payload.user_root_folder)
     dupe = db.scalar(select(User).where(User.username == payload.username))
     if dupe is not None:
         raise HTTPException(

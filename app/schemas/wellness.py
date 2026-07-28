@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.schemas.trade import to_naive_utc
 
 
 class WellnessProfileIn(BaseModel):
@@ -29,6 +31,8 @@ class WellnessEntryIn(BaseModel):
     kind: str = Field(min_length=1, max_length=64, examples=["checkin", "metric"])
     payload: dict = Field(default_factory=dict)
     recorded_at: datetime | None = None
+
+    _naive_utc = field_validator("recorded_at")(to_naive_utc)
 
 
 class WellnessEntryOut(WellnessEntryIn):

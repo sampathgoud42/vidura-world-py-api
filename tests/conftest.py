@@ -13,6 +13,8 @@ from pathlib import Path
 _TMP = Path(tempfile.mkdtemp(prefix="vidura_test_"))
 os.environ.setdefault("VIDURA_DATABASE_PATH", str(_TMP / "test_app.db"))
 os.environ.setdefault("VIDURA_VAR_DIR", str(_TMP / "var"))
+# Tests build user folders under pytest tmp paths, outside customers_root.
+os.environ.setdefault("VIDURA_ALLOW_ANY_ROOT", "true")
 
 import pytest
 from fastapi.testclient import TestClient

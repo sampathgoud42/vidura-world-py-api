@@ -53,6 +53,19 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.middleware("http")
+    async def api_key_guard(request: Request, call_next):
+        # Shared-key gate (VIDURA_API_KEY). Docs and health stay open so the
+        # Swagger UI can be browsed; every /api route requires the header.
+        expected = get_settings().api_key
+        if expected and request.url.path.startswith(settings.api_v1_prefix):
+            import hmac as _hmac
+
+            provided = request.headers.get("X-API-Key", "")
+            if not _hmac.compare_digest(provided.encode(), expected.encode()):
+                return JSONResponse(status_code=401, content={"detail": "Missing or invalid X-API-Key"})
+        return await call_next(request)
+
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
     @app.exception_handler(Exception)

@@ -26,7 +26,6 @@ class BotStartRequest(BaseModel):
     user_id: str
     version: str | None = Field(default=None, examples=["v2"])
     mode: str = Field(default="paper", pattern="^(paper|mock)$")
-    extra_args: list[str] = Field(default_factory=list, max_length=16)
 
 
 class BotStopRequest(BaseModel):
@@ -47,6 +46,7 @@ class BotRunOut(BaseModel):
     status: str
     exit_code: int | None
     log_file: str | None
+    extra: dict | None = None
     started_at: datetime
     stopped_at: datetime | None
 

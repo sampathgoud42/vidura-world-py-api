@@ -158,15 +158,10 @@ def btc_trades(
     db: Session = Depends(get_db),
 ) -> TradeHistoryPage:
     keys = [_btc_key(bot)] if bot else list(BTC_KEYS)
-    total, items = 0, []
-    for key in keys:
-        t, rows = trades_svc.query_trades(
-            db, user_id=user_id, bot_key=key, days=days, limit=limit, offset=offset
-        )
-        total += t
-        items.extend(rows)
-    items.sort(key=lambda t: t.opened_at, reverse=True)
-    return TradeHistoryPage(total=total, items=[TradeOut.model_validate(t) for t in items[:limit]])
+    total, items = trades_svc.query_trades(
+        db, user_id=user_id, bot_key=keys, days=days, limit=limit, offset=offset
+    )
+    return TradeHistoryPage(total=total, items=[TradeOut.model_validate(t) for t in items])
 
 
 @router.post("/btc/sync-trades", operation_id="syncBtcTrades")

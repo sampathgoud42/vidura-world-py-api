@@ -40,6 +40,14 @@ class Settings(BaseSettings):
     # exchange.  Flip to False deliberately, never by accident.
     paper_only: bool = True
 
+    # Optional shared API key. When set, every /api request must carry it in
+    # the X-API-Key header. Empty (default) = open, for localhost/LAN dev.
+    api_key: str = ""
+
+    # By default user_root_folder must live under customers_root so the API
+    # cannot be pointed at arbitrary filesystem folders holding secrets.
+    allow_any_root: bool = False
+
     @property
     def database_url(self) -> str:
         return f"sqlite:///{self.database_path.as_posix()}"

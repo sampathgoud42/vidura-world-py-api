@@ -8,7 +8,9 @@ from app.core import paths
 
 
 class UserCreate(BaseModel):
-    username: str = Field(min_length=1, max_length=64)
+    # Same contract as the legacy customer folders: safe filename characters
+    # only (the name is also used in log filenames and subprocess argv).
+    username: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]{1,64}$")
     email: EmailStr | None = None
     user_root_folder: str = Field(
         description="Windows (D:\\...) or POSIX (/home/...) path to the user's "
