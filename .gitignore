@@ -26,4 +26,6 @@ runtime/**/*.err
 runtime/**/__pycache__/
 runtime/**/cache/
 runtime/**/all_configs.csv
+# supervisor scratch state — rewritten on every scan, never worth versioning
+runtime/super_research/.resolve_state.json
 
