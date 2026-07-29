@@ -144,6 +144,40 @@ async def _gex_daily_loop() -> None:
         await asyncio.sleep(600)  # re-check every 10 minutes
 
 
+async def _earnings_warm_loop() -> None:
+    """Keep the earnings sweep warm.
+
+    A cold sweep is ~100 yfinance calls (~45s) — far past any browser client's
+    timeout — so the endpoint must always be answering from cache. This warms
+    it shortly after boot and then tops it up well inside the 12h staleness
+    window. Keyless, so unlike GEX there is no budget to ration.
+    """
+    from app.core.database import SessionLocal
+    from app.services import earnings as earnings_svc
+
+    log = logging.getLogger("app.earnings")
+    await asyncio.sleep(20)  # let startup settle; this is not urgent
+    while True:
+        try:
+            def _sweep() -> dict:
+                db = SessionLocal()
+                try:
+                    return earnings_svc.get_earnings(db, hours=48)
+                finally:
+                    db.close()
+
+            payload = await asyncio.to_thread(_sweep)
+            log.info(
+                "earnings cache warm: %s print(s) in 48h%s",
+                payload["count"], " (cached)" if payload.get("cached") else "",
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("earnings warm failed: %s", exc)
+        await asyncio.sleep(6 * 3600)  # half the staleness window
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -154,6 +188,8 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_super_sync_loop(settings.super_sync_interval)))
     if settings.gex_daily_enabled and not settings.cloud_mode:
         tasks.append(asyncio.create_task(_gex_daily_loop()))
+    if settings.earnings_enabled:
+        tasks.append(asyncio.create_task(_earnings_warm_loop()))
     yield
     for task in tasks:
         task.cancel()

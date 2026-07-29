@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.api.cloud import require_local_runtime
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.services import earnings as earnings_svc
 from app.schemas.super import (
     SnapshotOut,
     SuperConfigUpdate,
@@ -120,6 +121,24 @@ def get_econ(db: Session = Depends(get_db)) -> dict:
     if econ is None:
         raise HTTPException(status_code=404, detail="no econ snapshot in the database yet")
     return econ
+
+
+@router.get("/earnings", operation_id="getEarnings")
+def get_earnings(
+    hours: int = Query(default=24, ge=1, le=168, description="look-ahead window"),
+    refresh: bool = Query(default=False, description="force a re-sweep, ignoring the cache"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Scheduled earnings for the large-cap universe inside the next `hours`.
+
+    Keyless (yfinance) so there is no budget to protect, but a sweep is ~100
+    HTTP calls — the result is cached in daily_snapshots and only refetched
+    when older than 12h, so polling this is cheap.
+    """
+    try:
+        return earnings_svc.get_earnings(db, hours=hours, force=refresh)
+    except Exception as exc:  # upstream outage must not 500 the desk
+        raise HTTPException(status_code=502, detail=f"earnings lookup failed: {exc}") from exc
 
 
 @router.post("/regenerate", operation_id="regenerateEngines")

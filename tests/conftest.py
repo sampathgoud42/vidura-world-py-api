@@ -22,6 +22,9 @@ os.environ.setdefault("VIDURA_SUPER_AUTO_SYNC", "false")
 # 5 requests/day and the desk depends on them.
 os.environ.setdefault("VIDURA_GEX_DAILY_ENABLED", "false")
 os.environ.setdefault("VIDURA_FLASHALPHA_API_KEY", "test-key-not-real")
+# The earnings warm loop is keyless but still ~100 yfinance calls — tests must
+# stay offline and fast, so the sweep is always monkeypatched instead.
+os.environ.setdefault("VIDURA_EARNINGS_ENABLED", "false")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +37,18 @@ from app.main import app
 def client() -> TestClient:
     with TestClient(app) as c:
         yield c
+
+
+@pytest.fixture
+def db_session():
+    """A plain session for exercising services without going through HTTP."""
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 @pytest.fixture(autouse=True)

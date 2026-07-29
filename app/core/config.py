@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     flashalpha_api_key: str = ""  # else read from <source_repo>/super_research/flashalpha.env
     gex_tickers: str = "spy,qqq"
 
+    # --- earnings calendar -------------------------------------------------
+    # Keyless (yfinance), so no budget to ration — but a sweep is ~100 HTTP
+    # calls, so a background loop keeps the cache warm and requests only ever
+    # read it. Disable in tests / air-gapped hosts.
+    earnings_enabled: bool = True
+
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the

@@ -15,8 +15,9 @@ tzdata
 aiohttp
 numpy
 pandas
+yfinance
+lxml          # yfinance.get_earnings_dates parses HTML with it; ImportError without
 
 # dev / test
 pytest>=8
 httpx>=0.27
-yfinance
