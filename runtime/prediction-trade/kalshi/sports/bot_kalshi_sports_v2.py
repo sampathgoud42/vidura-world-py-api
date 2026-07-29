@@ -828,7 +828,7 @@ async def execute_scalp_trade(client, market_ticker: str, side: str, team: str,
         print(f"  [TRADE] not filled in {SPORT_FILL_TIMEOUT_S}s — cancelling this order")
         try:
             for o in await v1.resting_orders(client, market_ticker):
-                await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
         except Exception as e:
             print(f"  [TRADE] cancel failed: {e}")
         return
@@ -903,7 +903,7 @@ async def _cancel_game_orders(client, ticker: str) -> None:
     event = _event_of(ticker)
     for o in await v1.resting_orders(client):
         if _event_of(o.get("ticker", "")) == event:
-            await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+            await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
 
 
 async def _tp_guardian(client, traded: set) -> None:

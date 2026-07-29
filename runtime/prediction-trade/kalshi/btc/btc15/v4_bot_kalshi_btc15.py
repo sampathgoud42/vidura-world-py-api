@@ -613,7 +613,7 @@ async def cancel_all(c: KalshiClient) -> int:
         return 0
     print(f"  [CANCEL] Cancelling {len(orders)} resting order(s) …")
     results = await asyncio.gather(
-        *(c.req("DELETE", f"/portfolio/orders/{o['order_id']}") for o in orders),
+        *(c.req("DELETE", f"/portfolio/events/orders/{o['order_id']}") for o in orders),
         return_exceptions=True,
     )
     failed = sum(1 for r in results if isinstance(r, Exception))

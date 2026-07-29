@@ -893,7 +893,7 @@ async def execute_trade(client, adapter, book: SportBook, market_ticker: str,
               f"(a missed entry costs nothing; never chase)")
         try:
             for o in await v1.resting_orders(client, market_ticker):
-                await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
         except Exception as e:
             print(f"  [TRADE] cancel failed: {e}")
         return True
@@ -1212,7 +1212,7 @@ async def _cancel_match_orders(client, ticker: str) -> None:
     event = _event_of(ticker)
     for o in await v1.resting_orders(client):
         if _event_of(o.get("ticker", "")) == event:
-            await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+            await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
 
 
 def _basis_entry(info: dict, pos: dict, have: int) -> int:

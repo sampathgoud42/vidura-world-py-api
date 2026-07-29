@@ -814,9 +814,12 @@ async def execute_sport_trade(client, market_ticker: str, player: str,
     # 1) wait for fill, double-confirmed via positions
     if not await _await_sport_fill(client, market_ticker, contracts, SPORT_FILL_TIMEOUT_S):
         print(f"  [TRADE] not filled in {SPORT_FILL_TIMEOUT_S}s — cancelling this order")
+        # V2 cancel path. The legacy DELETE /portfolio/orders/{id} now returns
+        # HTTP 410 deprecated_v1_order_endpoint, so an unfilled order would sit
+        # resting forever while this logged "[TRADE] cancel failed".
         try:                                  # cancel only THIS market's resting order(s)
             for o in await v1.resting_orders(client, market_ticker):
-                await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
         except Exception as e:
             print(f"  [TRADE] cancel failed: {e}")
         return
@@ -1218,7 +1221,7 @@ async def _tp_guardian(client, traded: set, shared: dict) -> None:
                 try:                                     # cancel all resting orders for the match
                     for o in await v1.resting_orders(client):
                         if _event_of(o.get("ticker", "")) == event:
-                            await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                            await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
                 except Exception as e:
                     print(f"  [BANDEXIT] {tk} cancel match orders failed: {e}", file=sys.stderr)
                 kind = (f"take-profit ceiling {SPORT_TP_CEILING_C}c" if hit_tp
@@ -1285,7 +1288,7 @@ async def _tp_guardian(client, traded: set, shared: dict) -> None:
                 try:
                     for o in await v1.resting_orders(client):
                         if _event_of(o.get("ticker", "")) == event:
-                            await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                            await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
                 except Exception as e:
                     print(f"  [STOPLOSS] {tk} cancel match orders failed: {e}", file=sys.stderr)
                 exit_px = max(1, bid_c - SPORT_STOP_SLIP_C)    # cross the bid to ensure a fill
@@ -1368,7 +1371,7 @@ async def _tp_guardian(client, traded: set, shared: dict) -> None:
             try:                              # cancel ALL resting orders for the whole match
                 for o in await v1.resting_orders(client):
                     if _event_of(o.get("ticker", "")) == event:
-                        await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                        await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
             except Exception as e:
                 print(f"  [REVERSAL] {tk} cancel match orders failed: {e}", file=sys.stderr)
             exit_px = max(1, bid_c - SPORT_STOP_SLIP_C)
@@ -1506,7 +1509,7 @@ async def _tp_guardian(client, traded: set, shared: dict) -> None:
             try:                           # cancel ALL resting orders for the match
                 for o in await v1.resting_orders(client):
                     if _event_of(o.get("ticker", "")) == event:
-                        await client.req("DELETE", f"/portfolio/orders/{o['order_id']}")
+                        await client.req("DELETE", f"/portfolio/events/orders/{o['order_id']}")
             except Exception as e:
                 print(f"  [FAVEXIT] {tk} cancel match orders failed: {e}", file=sys.stderr)
             exit_px = max(1, held_bid_c - SPORT_STOP_SLIP_C)
