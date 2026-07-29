@@ -135,13 +135,15 @@ class BotStartOptions:
     """Normalized start options passed through from the request schema."""
 
     def __init__(
-        self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None, contracts=None
+        self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
+        contracts=None, kill_existing: bool = False,
     ):
         self.mode = mode
         self.sports = sports
         self.sport_settings = sport_settings
         self.target_pct = target_pct
         self.contracts = contracts
+        self.kill_existing = kill_existing
 
 
 def _launch_plan(
@@ -296,6 +298,11 @@ def start_bot(
     options = options or BotStartOptions(mode=mode)
     options.mode = mode
 
+    if options.kill_existing:
+        # explicit "take over": clear anything already running this bot,
+        # including processes the API never started
+        kill_bot_processes(db, bot_key)
+
     if mode == "live":
         if get_settings().paper_only:
             raise BotManagerError(
@@ -311,7 +318,22 @@ def start_bot(
         existing = running_run(db, bot_key, user.user_id)
         if existing is not None:
             raise BotManagerError(
-                f"Bot {bot_key} already running for user {user.username} (run {existing.id})", 409
+                f"Bot {bot_key} already running for user {user.username} (run {existing.id}). "
+                "Stop it, or start with kill_existing=true to take over.",
+                409,
+            )
+
+        # A copy the API never started (orphan from a previous instance, the
+        # legacy scheduler, or a manual launch) is invisible to the DB check
+        # above. Two bots on one Kalshi account corrupted a live ledger once,
+        # so refuse rather than silently double-run.
+        stray = [p for p in find_bot_processes(bot_key) if p["pid"] not in _tracked_pids(db, bot_key)]
+        if stray:
+            listed = ", ".join(f"pid {p['pid']} ({p['script']})" for p in stray[:4])
+            raise BotManagerError(
+                f"{len(stray)} {bot_key} process(es) already running outside this API: "
+                f"{listed}. Start with kill_existing=true to take over, or stop them first.",
+                409,
             )
 
         argv, cwd, env = _launch_plan(spec, ver, user, options)
@@ -384,6 +406,106 @@ def start_bot(
         _PROCESSES[run.id] = proc
     logger.info("Started %s %s for %s (pid %s)", bot_key, ver.version, user.username, proc.pid)
     return run
+
+
+def _tracked_pids(db: Session, bot_key: str) -> set[int]:
+    """pids of runs this API considers alive for the bot."""
+    return {
+        r.pid
+        for r in reconcile_runs(db, bot_key=bot_key)
+        if r.status == "running" and r.pid is not None
+    }
+
+
+def find_bot_processes(bot_key: str) -> list[dict]:
+    """Every python process running ANY version of this bot, whether we
+    started it or not.
+
+    Catches the dangerous cases the DB cannot see: an orphan left by a
+    previous API instance, one launched by the legacy scheduler/bots.py, or
+    a copy started by hand. Two of these against one Kalshi account is how
+    a live ledger got corrupted before, so the API surfaces them.
+    """
+    from app.services.procs import iter_python_processes
+
+    spec = get_bot(bot_key)
+    names = {Path(v.rel_script).name for v in spec.versions}
+    matched: dict[int, tuple] = {}
+    for proc, cmdline in iter_python_processes():
+        joined = " ".join(cmdline)
+        script = next((n for n in names if n in joined), None)
+        if script:
+            matched[proc.pid] = (proc, joined, script)
+
+    # On Windows the venv launcher re-execs a real interpreter, so the same
+    # bot shows up twice (parent + child). Report only the roots — killing a
+    # root takes its children with it.
+    out: list[dict] = []
+    for pid, (proc, joined, script) in matched.items():
+        try:
+            parent = proc.parent()
+            if parent is not None and parent.pid in matched:
+                continue
+        except psutil.Error:
+            pass
+        try:
+            started = datetime.fromtimestamp(proc.create_time(), tz=timezone.utc)
+            age_s = int((datetime.now(timezone.utc) - started).total_seconds())
+        except psutil.Error:
+            age_s = None
+        out.append(
+            {
+                "pid": proc.pid,
+                "script": script,
+                "age_seconds": age_s,
+                "cmdline": joined[-200:],
+            }
+        )
+    return out
+
+
+def kill_bot_processes(
+    db: Session, bot_key: str, *, pids: list[int] | None = None
+) -> dict:
+    """Kill every process running this bot (optionally only the given pids),
+    including ones the API never started, and reconcile the DB rows."""
+    from app.services import procs as procs_mod
+
+    if psutil is None:
+        raise BotManagerError("process control is unavailable in this deployment", 503)
+
+    found = find_bot_processes(bot_key)
+    targets = [p for p in found if pids is None or p["pid"] in pids]
+    if not targets:
+        return {"bot_key": bot_key, "killed": [], "found": found}
+
+    victims = []
+    for t in targets:
+        try:
+            proc = psutil.Process(t["pid"])
+        except psutil.Error:
+            continue
+        victims.append(proc)
+        try:  # take the children too (workers, spawned helpers)
+            victims.extend(proc.children(recursive=True))
+        except psutil.Error:
+            pass
+
+    killed = procs_mod.terminate(victims)
+
+    # any DB run whose pid we just killed is no longer running
+    for run in reconcile_runs(db, bot_key=bot_key):
+        if run.status == "running" and run.pid in killed:
+            run.status = "stopped"
+            run.stopped_at = _utcnow()
+            _PROCESSES.pop(run.id, None)
+    db.commit()
+    logger.info("killed %s process(es) for %s: %s", len(killed), bot_key, killed)
+    return {
+        "bot_key": bot_key,
+        "killed": killed,
+        "found": [t for t in targets],
+    }
 
 
 def stop_bot(db: Session, bot_key: str, *, user_id: str | None = None, run_id: int | None = None) -> list[BotRun]:

@@ -45,6 +45,57 @@ def _btc_key(bot: str) -> str:
     return bot
 
 
+def _processes(bot_key: str) -> dict:
+    """Every process running this bot, including ones the API never started."""
+    try:
+        found = bot_manager.find_bot_processes(bot_key)
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return {"bot_key": bot_key, "count": len(found), "processes": found}
+
+
+def _kill(db: Session, bot_key: str, pids: list[int] | None) -> dict:
+    require_local_runtime(f"Killing {bot_key} processes")
+    try:
+        return bot_manager.kill_bot_processes(db, bot_key, pids=pids)
+    except bot_manager.BotManagerError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    except KeyError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.get("/btc/processes", operation_id="getBtcBotProcesses")
+def btc_processes(bot: str = Query(default="btc15", description="btc15 or btc60")) -> dict:
+    """Stray-process check: what is actually running on this machine."""
+    return _processes(_btc_key(bot))
+
+
+@router.post("/btc/kill", operation_id="killBtcBotProcesses")
+def btc_kill(
+    bot: str = Query(default="btc15"),
+    pids: str | None = Query(default=None, description="comma-separated; omit to kill all"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Kill every process running this BTC bot — including copies the API did
+    not start. Use when a stray run blocks a start."""
+    parsed = [int(p) for p in pids.split(",") if p.strip().isdigit()] if pids else None
+    return _kill(db, _btc_key(bot), parsed)
+
+
+@router.get("/sports/processes", operation_id="getSportsBotProcesses")
+def sports_processes() -> dict:
+    return _processes("sports")
+
+
+@router.post("/sports/kill", operation_id="killSportsBotProcesses")
+def sports_kill(
+    pids: str | None = Query(default=None, description="comma-separated; omit to kill all"),
+    db: Session = Depends(get_db),
+) -> dict:
+    parsed = [int(p) for p in pids.split(",") if p.strip().isdigit()] if pids else None
+    return _kill(db, "sports", parsed)
+
+
 @router.get("", operation_id="getBots", response_model=list[BotInfo])
 def get_bots(db: Session = Depends(get_db)) -> list[BotInfo]:
     out = []
@@ -81,6 +132,7 @@ def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
         sport_settings=payload.sport_settings,
         target_pct=payload.target_pct,
         contracts=payload.contracts,
+        kill_existing=payload.kill_existing,
     )
     try:
         run = bot_manager.start_bot(

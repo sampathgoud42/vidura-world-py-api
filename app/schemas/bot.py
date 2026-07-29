@@ -57,6 +57,12 @@ class BotStartRequest(BaseModel):
         default=None, ge=0, le=1000,
         description="profit target % on the bankroll/portfolio (TARGET_PORTFOLIO_PCT); bot halts when reached",
     )
+    kill_existing: bool = Field(
+        default=False,
+        description="kill any process already running this bot — including copies "
+        "the API did not start (orphans, legacy scheduler, manual launches) — "
+        "then start fresh",
+    )
     contracts: int | None = Field(
         default=None, ge=1, le=1000,
         description="fixed contracts per order (BTC bots: KALSHI_CONTRACTS/BOT152_CONTRACTS; "
