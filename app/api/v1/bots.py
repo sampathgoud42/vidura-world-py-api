@@ -39,6 +39,24 @@ def _user_or_404(db: Session, user_id: str) -> User:
     return user
 
 
+def _refresh_mirror(db: Session, user_id: str | None, bot_keys: list[str]) -> None:
+    """Pull the bots' trade CSVs into the DB before answering a read.
+
+    The trades table is a mirror of files the bots own, and it used to be
+    refreshed only when someone pressed "sync" — so a position could be open
+    for hours while Active Bets sat empty. TTL-guarded and non-fatal, so a
+    polling UI does not re-parse constantly and a bad CSV still serves the
+    rows already stored.
+    """
+    if not user_id:
+        return  # unscoped query: no single user's files to refresh
+    user = db.get(User, user_id)
+    if user is None:
+        return  # the read itself will return an empty page
+    for key in bot_keys:
+        ingest.auto_sync(db, user, key)
+
+
 def _btc_key(bot: str) -> str:
     if bot not in BTC_KEYS:
         raise HTTPException(status_code=422, detail=f"bot must be one of {BTC_KEYS}")
@@ -220,6 +238,7 @@ def btc_trades(
     db: Session = Depends(get_db),
 ) -> TradeHistoryPage:
     keys = [_btc_key(bot)] if bot else list(BTC_KEYS)
+    _refresh_mirror(db, user_id, keys)
     total, items = trades_svc.query_trades(
         db, user_id=user_id, bot_key=keys, days=days, limit=limit, offset=offset
     )
@@ -291,6 +310,7 @@ def sports_logs(
 def sports_active_bets(
     user_id: str | None = Query(default=None), db: Session = Depends(get_db)
 ) -> list[TradeOut]:
+    _refresh_mirror(db, user_id, ["sports"])
     open_trades = trades_svc.active_trades(db, user_id=user_id, bot_key="sports")
     return [TradeOut.model_validate(t) for t in open_trades]
 
@@ -301,6 +321,7 @@ def sports_performance(
     days: int | None = Query(default=None, ge=1, le=3660),
     db: Session = Depends(get_db),
 ) -> PerformanceSummary:
+    _refresh_mirror(db, user_id, ["sports"])
     return trades_svc.performance(db, user_id=user_id, bot_key="sports", days=days)
 
 
@@ -312,6 +333,7 @@ def sports_trades(
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> TradeHistoryPage:
+    _refresh_mirror(db, user_id, ["sports"])
     total, items = trades_svc.query_trades(
         db, user_id=user_id, bot_key="sports", days=days, limit=limit, offset=offset
     )

@@ -80,6 +80,12 @@ class Settings(BaseSettings):
     flashalpha_api_key: str = ""  # else read from <source_repo>/super_research/flashalpha.env
     gex_tickers: str = "spy,qqq"
 
+    # --- trade mirror ------------------------------------------------------
+    # Read endpoints refresh the trades table from the bots' CSVs before
+    # answering, so an open position shows up without anyone pressing "sync".
+    # Disable only if the CSVs live somewhere the API cannot read.
+    trades_auto_sync: bool = True
+
     # --- earnings calendar -------------------------------------------------
     # Keyless (yfinance), so no budget to ration — but a sweep is ~100 HTTP
     # calls, so a background loop keeps the cache warm and requests only ever

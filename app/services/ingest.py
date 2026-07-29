@@ -17,6 +17,8 @@ import csv
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
@@ -318,3 +320,64 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
         updated += file_upd
         report[str(path)] = {"rows": len(rows), "inserted": file_ins, "updated": file_upd}
     return {"bot_key": bot_key, "inserted": inserted, "updated": updated, "files": report}
+
+
+# --- automatic sync --------------------------------------------------------
+# The bots own their trade CSVs; the DB is a mirror. Until this existed the
+# mirror was only refreshed by POST /sync-trades — i.e. when a human clicked
+# "Sync from bot CSVs" — so a live position could be open for hours while the
+# desk showed an empty Active Bets panel (observed 2026-07-29 with a resting
+# tennis position). Read endpoints now refresh first.
+#
+# The CSVs are a few KB, so a sync is cheap, but the UI polls every few
+# seconds: a TTL keeps that from re-parsing on every request, and a lock
+# keeps two concurrent readers from double-inserting.
+
+_AUTO_TTL_S = 10.0
+_last_sync: dict[tuple[str, str], float] = {}
+_auto_lock = Lock()
+
+
+def is_user_scoped(user: User, bot_key: str) -> bool:
+    """True when every CSV for this bot lives inside the user's own folder.
+
+    btc60 writes its history next to its script, shared across users by
+    design. Mirroring that automatically would attribute one shared ledger to
+    whichever user happened to open the page — so it stays opt-in via the
+    explicit sync endpoint.
+    """
+    root = paths.normalize_root(user.user_root_folder).resolve()
+    for path, _tag in _candidate_files(user, bot_key):
+        try:
+            path.resolve().relative_to(root)
+        except ValueError:
+            return False
+    return True
+
+
+def auto_sync(db: Session, user: User, bot_key: str, *, ttl: float = _AUTO_TTL_S) -> bool:
+    """Refresh this user/bot's trades from CSV if the last pass is stale.
+
+    Returns True if a sync ran. Never raises: a read endpoint must still
+    answer from the DB when the CSVs are missing, locked or malformed.
+    """
+    if not get_settings().trades_auto_sync:
+        return False
+    if not is_user_scoped(user, bot_key):
+        return False
+    key = (user.user_id, bot_key)
+    now = monotonic()
+    with _auto_lock:
+        if now - _last_sync.get(key, 0.0) < ttl:
+            return False
+        _last_sync[key] = now  # claim the slot before the slow part
+    try:
+        sync_trades(db, user, bot_key)
+        return True
+    except Exception as exc:
+        logger.warning("auto-sync failed for %s/%s: %s", user.username, bot_key, exc)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return False
