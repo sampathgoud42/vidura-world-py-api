@@ -21,8 +21,8 @@ def fake_sports_bot(tmp_path: Path, monkeypatch) -> Path:
             """
             import os, time
             for k in ("MAIN_SPORTS_LIST", "TENNIS_CONTRACTS", "TENNIS_BANK",
-                      "BASEBALL_CONTRACTS", "BASEBALL_BANK", "TARGET_PORTFOLIO_PCT",
-                      "MAIN_PAPER", "DRY_RUN_MODE"):
+                      "TENNIS_MODEL", "BASEBALL_CONTRACTS", "BASEBALL_BANK",
+                      "TARGET_PORTFOLIO_PCT", "MAIN_PAPER", "DRY_RUN_MODE"):
                 print(f"{k}={os.environ.get(k, '')}", flush=True)
             time.sleep(120)
             """
@@ -60,7 +60,7 @@ def test_sports_options_reach_bot_env(client, user, fake_sports_bot):
             "mode": "paper",
             "sports": ["tennis", "baseball"],
             "sport_settings": {
-                "tennis": {"contracts": 25, "bank": 300},
+                "tennis": {"contracts": 25, "bank": 300, "model": "v3"},
                 "baseball": {"contracts": 10, "bank": 150.5},
             },
             "target_pct": 12.5,
@@ -80,6 +80,7 @@ def test_sports_options_reach_bot_env(client, user, fake_sports_bot):
     assert "MAIN_SPORTS_LIST=tennis,baseball" in text
     assert "TENNIS_CONTRACTS=25" in text
     assert "TENNIS_BANK=300" in text
+    assert "TENNIS_MODEL=v3" in text
     assert "BASEBALL_CONTRACTS=10" in text
     assert "BASEBALL_BANK=150.5" in text
     assert "TARGET_PORTFOLIO_PCT=12.5" in text

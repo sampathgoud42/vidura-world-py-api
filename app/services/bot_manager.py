@@ -124,6 +124,9 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
             env[f"{prefix}_CONTRACTS"] = str(cfg.contracts)
         if cfg.bank is not None:
             env[f"{prefix}_BANK"] = f"{cfg.bank:g}"
+        if cfg.model:
+            # the vendored tennis adapter picks its predict_* module from this
+            env[f"{prefix}_MODEL"] = cfg.model
     if options.target_pct is not None:
         env["TARGET_PORTFOLIO_PCT"] = f"{options.target_pct:g}"
 
@@ -359,7 +362,7 @@ def start_bot(
             extra["sports"] = options.sports
         if options.sport_settings:
             extra["sport_settings"] = {
-                k: {"contracts": v.contracts, "bank": v.bank}
+                k: {"contracts": v.contracts, "bank": v.bank, "model": v.model}
                 for k, v in options.sport_settings.items()
             }
         if options.target_pct is not None:

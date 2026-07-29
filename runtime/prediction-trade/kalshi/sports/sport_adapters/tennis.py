@@ -32,20 +32,47 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # kalshi/sports
 import bot_kalshi_sports_v1 as tv1                              # noqa: E402
-from tennis import predict_v5 as p5                             # noqa: E402
+
+# MODEL SELECTION (vidura-world): TENNIS_MODEL picks which predict_* module
+# this process runs. v5 stays the default — it is the forensics-derived
+# whitelist and the only model validated on ground-truth P&L. The others are
+# selectable for comparison runs:
+#   v5  production whitelist (default)   v4  ultra-gate wrapper over v3
+#   v3  situation engine + exits         v2  frozen 07/06 snapshot
+#   v1  frozen profitable-weekend snapshot
+import importlib                                                # noqa: E402
+
+TENNIS_MODEL = (os.getenv("TENNIS_MODEL") or "v5").strip().lower()
+if TENNIS_MODEL in ("", "default"):
+    TENNIS_MODEL = "v5"
+if TENNIS_MODEL not in ("v1", "v2", "v3", "v4", "v5"):
+    print(f"  [TENNIS] unknown TENNIS_MODEL={TENNIS_MODEL!r} — falling back to v5",
+          flush=True)
+    TENNIS_MODEL = "v5"
+try:
+    p5 = importlib.import_module(f"tennis.predict_{TENNIS_MODEL}")
+except ImportError as _exc:                                     # pragma: no cover
+    print(f"  [TENNIS] predict_{TENNIS_MODEL} unavailable ({_exc}) — using v5",
+          flush=True)
+    TENNIS_MODEL = "v5"
+    p5 = importlib.import_module("tennis.predict_v5")
 
 # v4 rule retained in v5 (user 07/13): no favorite-based firesell exits for
 # tennis — exits are the v5 bands/stop only. TRUE restores the v3 exits.
 TENNIS_FIRESELL_EXITS = os.getenv("TENNIS_FIRESELL_EXITS",
                                   "FALSE").strip().upper() == "TRUE"
 
-# MODEL SWITCH (user 07/16): the MAIN bot runs predict_v5 (see module doc).
-# tv1 imported its model symbols from predict_v3 at module load, so rebind
-# them here — this affects ONLY this process; the standalone v1 bot keeps v3.
+# MODEL SWITCH (user 07/16): the MAIN bot runs predict_v5 by default (see
+# module doc). tv1 imported its model symbols from predict_v3 at module load,
+# so rebind them here — this affects ONLY this process; the standalone v1 bot
+# keeps v3. Older models do not define every symbol (the exit rules arrived in
+# v3, the whitelist in v5), so rebind only what the chosen model actually has
+# and leave tv1's v3 defaults in place for the rest.
 for _n in ("predict_buy", "favorite_comeback_exit", "favorite_collapse_exit",
            "bought_high_collapse_exit", "determine_favorite", "_md_from_kalshi",
            "BID_LO", "BID_HI", "CONF_ULTRA", "CONF_HIGH"):
-    setattr(tv1, _n, getattr(p5, _n))
+    if hasattr(p5, _n):
+        setattr(tv1, _n, getattr(p5, _n))
 
 from .base import SportAdapter                                  # noqa: E402
 
@@ -110,7 +137,8 @@ class TennisAdapter(SportAdapter):
 
     def describe(self) -> str:
         return (super().describe()
-                + f" model=v5 (band {p5.BID_LO}-{p5.BID_HI}c whitelist, ghost-guard, "
+                + f" model={TENNIS_MODEL} (band {getattr(p5, 'BID_LO', '?')}-"
+                  f"{getattr(p5, 'BID_HI', '?')}c whitelist, ghost-guard, "
                   f"flat size) entry=maker+{self.cfg.price_bump_c}c/{self.cfg.fill_timeout_s}s "
                   f"exits=[TP {self.cfg.tp_ceiling_c}c, stop entry-{self.cfg.stop_loss_c}c "
                   f"x{self.cfg.stop_confirm}, floor {self.cfg.sl_floor_c}c] "

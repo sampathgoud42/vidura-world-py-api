@@ -27,6 +27,13 @@ class SportSettings(BaseModel):
 
     contracts: int | None = Field(default=None, ge=1, le=1000, description="contracts per order")
     bank: float | None = Field(default=None, ge=0, description="session bankroll $ (0 = unlimited)")
+    model: str | None = Field(
+        default=None,
+        pattern="^v[1-5]$",
+        description="prediction model version for this sport (tennis: v1-v5, "
+        "default v5 — the forensics-validated whitelist)",
+        examples=["v5"],
+    )
 
 
 class BotStartRequest(BaseModel):
