@@ -24,6 +24,7 @@ V5 EXECUTION SPEC (this adapter + the engine):
 """
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from datetime import datetime
@@ -68,11 +69,56 @@ TENNIS_FIRESELL_EXITS = os.getenv("TENNIS_FIRESELL_EXITS",
 # keeps v3. Older models do not define every symbol (the exit rules arrived in
 # v3, the whitelist in v5), so rebind only what the chosen model actually has
 # and leave tv1's v3 defaults in place for the rest.
+#
+# The models' signatures drifted as rules were added: the caller passes
+# neutral_favorite= (the 07/12 finals rule), which v3/v4/v5 accept but the
+# FROZEN v1/v2 snapshots do not. Swapping v1 in raw therefore made every poll
+# raise TypeError, which the caller swallows into {"action": "WAIT"} — and a
+# WAIT is never logged, so v1/v2 sat silent for a whole session without ever
+# being able to buy. Filter kwargs the target cannot take instead of editing
+# the frozen snapshots. A model that predates a rule simply does not apply it.
+def _compat(fn):
+    import inspect
+
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return fn
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return fn
+    allowed = set(params)
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        dropped = [k for k in kwargs if k not in allowed]
+        if dropped:
+            _warn_dropped(fn, dropped)
+        return fn(*args, **{k: v for k, v in kwargs.items() if k in allowed})
+
+    return wrapper
+
+
+_WARNED: set[str] = set()
+
+
+def _warn_dropped(fn, dropped) -> None:
+    """Say it once per (function, kwarg) so a silent behaviour gap is visible
+    in the log without spamming every 30s poll."""
+    for k in dropped:
+        key = f"{getattr(fn, '__name__', fn)}:{k}"
+        if key in _WARNED:
+            continue
+        _WARNED.add(key)
+        print(f"  [TENNIS] {TENNIS_MODEL} predates '{k}' — that rule is not applied",
+              file=sys.stderr, flush=True)
+
+
 for _n in ("predict_buy", "favorite_comeback_exit", "favorite_collapse_exit",
            "bought_high_collapse_exit", "determine_favorite", "_md_from_kalshi",
            "BID_LO", "BID_HI", "CONF_ULTRA", "CONF_HIGH"):
     if hasattr(p5, _n):
-        setattr(tv1, _n, getattr(p5, _n))
+        _v = getattr(p5, _n)
+        setattr(tv1, _n, _compat(_v) if callable(_v) else _v)
 
 from .base import SportAdapter                                  # noqa: E402
 
