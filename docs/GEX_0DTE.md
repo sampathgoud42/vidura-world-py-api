@@ -45,7 +45,34 @@ So the working path is to read the chain **in a tab that is already allowed**
 and push it to the API. Pressing `⟳ update 0DTE` still tries the direct fetch
 first, and explains this if it is blocked.
 
-## The bookmarklet
+## Why `⟳ update 0DTE` cannot mint a snapshot on its own
+
+The button calls the API immediately — nothing waits for the schedule. The
+API is what cannot finish: its request to getgamma is answered with the bot
+check, so there is no fresh chain to compute from. It therefore re-reads the
+stored snapshot, which keeps the card on the newest data held rather than
+going stale or blank, and the age only resets when a genuinely new snapshot
+lands.
+
+To make a click (or a 5-minute tick) actually produce new data, the fetch has
+to happen where it is allowed: a tab on getgamma.io. Use the auto-push
+bookmarklet below — click it once when the session opens and that tab keeps
+pushing on its own, so the desk is always current and the button becomes a
+convenience rather than the mechanism.
+
+## The auto-push bookmarklet (recommended)
+
+Same as the one-shot below, but it keeps pushing every 5 minutes until the tab
+is closed or you click it again. Click once after the open; the desk then
+tracks it for the whole session.
+
+```js
+javascript:(()=>{if(window.__vidPush){clearInterval(window.__vidPush);window.__vidPush=null;alert('Vidura 0DTE auto-push STOPPED');return;}const go=async(loud)=>{try{const r=await fetch('/api/options?ticker=SPY&mode=0dte&strikes=50',{credentials:'include'});const d=await r.json();const p={ticker:d.ticker,spotPrice:d.spotPrice,mode:d.mode,timestamp:d.timestamp,marketStatus:d.marketStatus,marketOpen:d.marketOpen,contracts:d.contracts.map(c=>({contract_type:c.contract_type,strike_price:c.strike_price,open_interest:c.open_interest,greeks:{gamma:c.greeks&&c.greeks.gamma}}))};const q=await fetch('http://localhost:8790/api/v1/super/gex0dte/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload:p})});const v=await q.json();if(loud)alert(q.ok?('Vidura 0DTE auto-push STARTED (every 5 min)\n\n'+v.note):('Push failed: '+(v.detail||q.status)));}catch(e){if(loud)alert('Vidura 0DTE failed: '+e);}};go(true);window.__vidPush=setInterval(()=>go(false),300000);})()
+```
+
+Clicking it a second time stops the loop.
+
+## The one-shot bookmarklet
 
 Make a bookmark whose URL is the line below, open
 <https://www.getgamma.io/dashboard>, and click it. It reads the chain in that
