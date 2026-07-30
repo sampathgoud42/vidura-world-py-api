@@ -160,6 +160,20 @@ SPORT_STOP_SLIP_C = int(os.getenv("SPORT_STOP_SLIP_C", "3"))
 # Absolute price-band exits (any baseball position, independent of entry)
 SPORT_TP_CEILING_C = int(os.getenv("SPORT_TP_CEILING_C", "97"))
 SPORT_SL_FLOOR_C = int(os.getenv("SPORT_SL_FLOOR_C", "9"))
+# ── unconditional firesell band (user 07/30) ─────────────────────────────────
+# Applies to every sport/model ahead of the configured exits. 0 disables an edge.
+SPORT_FIRESELL_HI_C = int(os.getenv("SPORT_FIRESELL_HI_C", "98"))
+SPORT_FIRESELL_LO_C = int(os.getenv("SPORT_FIRESELL_LO_C", "6"))
+
+
+def _firesell_hit(bid_c) -> bool:
+    """True when the bid touched either firesell edge. bid 0 is excluded: no
+    buyer exists, so an exit order cannot fill."""
+    if bid_c is None:
+        return False
+    if SPORT_FIRESELL_HI_C > 0 and bid_c >= SPORT_FIRESELL_HI_C:
+        return True
+    return SPORT_FIRESELL_LO_C > 0 and 0 < bid_c <= SPORT_FIRESELL_LO_C
 # Never-sell-naked (user rule 07/12): every sell is preceded by this many
 # position+resting-order confirmations, this many seconds apart.
 SPORT_SELL_CONFIRMS = int(os.getenv("SPORT_SELL_CONFIRMS", "3"))
@@ -973,10 +987,38 @@ async def _tp_guardian(client, traded: set) -> None:
 
         stopped: set = set()
 
+        # ── UNCONDITIONAL FIRESELL (user 07/30) ──────────────────────────────
+        # Ahead of, and regardless of, the configured ceiling/floor, the strike
+        # debounce and SPORT_STOP_MIN_BID_C. Still scoped to configured sports,
+        # and still skips a 0 bid (no buyer — an exit cannot fill).
+        for p in positions:
+            tk = p.get("ticker", "")
+            if not _in_scope(tk):
+                continue
+            if abs(int(float(p.get("position_fp", "0")))) <= 0:
+                continue
+            side = "yes" if float(p.get("position_fp", "0")) >= 0 else "no"
+            try:
+                bid = await v1._bid_price(client, tk, side)
+            except Exception:
+                continue
+            bid_c = round(bid * 100) if bid is not None else None
+            if not _firesell_hit(bid_c):
+                continue
+            why = (f"bid {bid_c}c >= {SPORT_FIRESELL_HI_C}c — locking the win"
+                   if bid_c >= SPORT_FIRESELL_HI_C
+                   else f"bid {bid_c}c <= {SPORT_FIRESELL_LO_C}c — salvaging")
+            if await _exit_position(client, tk, side, "FIRESELL", why, bid_c,
+                                    recheck=_firesell_hit, risk_off=True):
+                stopped.add(tk)
+                _BAND_STRIKES.pop(tk, None)
+
         # ── hard price-band exits ────────────────────────────────────────────
         if SPORT_TP_CEILING_C > 0 or SPORT_SL_FLOOR_C > 0:
             for p in positions:
                 tk = p.get("ticker", "")
+                if tk in stopped:          # already firesold this cycle
+                    continue
                 if not _in_scope(tk):
                     continue
                 have = abs(int(float(p.get("position_fp", "0"))))

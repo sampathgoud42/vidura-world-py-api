@@ -196,6 +196,25 @@ SPORT_STOP_SLIP_C = int(os.getenv("SPORT_STOP_SLIP_C", "3"))
 SPORT_TP_CEILING_C = int(os.getenv("SPORT_TP_CEILING_C", "97"))
 SPORT_SL_FLOOR_C = int(os.getenv("SPORT_SL_FLOOR_C", "9"))
 SPORT_FAVX_CONFIRM = int(os.getenv("SPORT_FAVX_CONFIRM", "2"))
+# ── unconditional firesell band (user 07/30) ─────────────────────────────────
+# Applies to EVERY sport and every prediction model, ahead of and regardless
+# of the per-sport ceiling/floor, strike debounce and firesell toggles. Set
+# either to 0 to disable that edge.
+SPORT_FIRESELL_HI_C = int(os.getenv("SPORT_FIRESELL_HI_C", "98"))
+SPORT_FIRESELL_LO_C = int(os.getenv("SPORT_FIRESELL_LO_C", "6"))
+
+
+def _firesell_hit(bid_c: int | None) -> bool:
+    """True when the bid has touched either firesell edge.
+
+    bid 0 is excluded deliberately: it means there is no buyer at all, so an
+    exit order cannot fill and retrying every cycle would only spam the log.
+    """
+    if bid_c is None:
+        return False
+    if SPORT_FIRESELL_HI_C > 0 and bid_c >= SPORT_FIRESELL_HI_C:
+        return True
+    return SPORT_FIRESELL_LO_C > 0 and 0 < bid_c <= SPORT_FIRESELL_LO_C
 # ── spread gate (user rule 07/12) ─────────────────────────────────────────────
 # Before EVERY order (buy, TP sell, stop-loss/band/sport exits): if the bid/ask
 # spread is wider than SPORT_SPREAD_MAX_C cents the book is unstable — WAIT for
@@ -1351,6 +1370,49 @@ async def _tp_guardian(client, traded: set) -> None:
 
         stopped: set = set()
 
+        # ── UNCONDITIONAL FIRESELL (user 07/30) ─────────────────────────────
+        # At these extremes the price is no longer a strategy question:
+        #   >= SPORT_FIRESELL_HI_C the market has all but settled our way and
+        #      the last cent or two is not worth carrying settlement risk;
+        #   <= SPORT_FIRESELL_LO_C the position is all but dead and what is
+        #      left is salvage.
+        # This runs BEFORE every configured exit and applies to EVERY sport
+        # and every prediction model (tennis v1-v5, baseball), ignoring the
+        # per-sport ceiling/floor, the strike debounce, SPORT_STOP_MIN_BID_C
+        # and the firesell toggles. risk_off=True so the spread guard cannot
+        # defer it either — the 07/16 forensics found that guard deadlocking
+        # losing positions to $0.
+        #
+        # Two things it still honours, both safety rather than strategy:
+        #   - the sport-scope guard, so this bot never sells the BTC/perp
+        #     bots' positions on the shared Kalshi account;
+        #   - a bid of 0, which means no buyer exists — an exit order cannot
+        #     fill, so retrying every cycle would just spam the log.
+        for p in positions:
+            tk = p.get("ticker", "")
+            if _sport_of(tk) not in ADAPTERS:
+                continue
+            have = abs(int(float(p.get("position_fp", "0"))))
+            if have <= 0:
+                continue
+            side = "yes" if float(p.get("position_fp", "0")) >= 0 else "no"
+            try:
+                bid = await v1._bid_price(client, tk, side)
+            except Exception:
+                continue
+            if bid is None:
+                continue
+            bid_c = round(bid * 100)
+            if not _firesell_hit(bid_c):
+                continue
+            why = (f"bid {bid_c}c >= {SPORT_FIRESELL_HI_C}c — locking the win"
+                   if bid_c >= SPORT_FIRESELL_HI_C
+                   else f"bid {bid_c}c <= {SPORT_FIRESELL_LO_C}c — salvaging")
+            if await _exit_position(client, tk, side, "FIRESELL", why, bid_c,
+                                    recheck=_firesell_hit, risk_off=True):
+                stopped.add(tk)
+                _BAND_STRIKES.pop(tk, None)
+
         # ── hard price-band exits (ceiling immediate; floor debounced) ───────
         # Ceiling (profit-lock) and floor (loss cut) are PER-SPORT: each
         # adapter's cfg.tp_ceiling_c / cfg.sl_floor_c (falling back to the
@@ -1358,6 +1420,8 @@ async def _tp_guardian(client, traded: set) -> None:
         # (user 07/13) these are the ONLY exits: 97c ceiling, 7c floor.
         for p in positions:
             tk = p.get("ticker", "")
+            if tk in stopped:            # already firesold this cycle
+                continue
             adapter = ADAPTERS.get(_sport_of(tk))
             if adapter is None:
                 continue

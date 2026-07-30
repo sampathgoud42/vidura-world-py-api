@@ -259,6 +259,20 @@ _STOP_STRIKES: dict = {}   # ticker -> consecutive cycles seen below the stop tr
 # to disable either side. The trade CSV is updated by the close-detection loop.
 SPORT_TP_CEILING_C = int(os.getenv("SPORT_TP_CEILING_C", "97"))   # sell when bid >= this
 SPORT_SL_FLOOR_C = int(os.getenv("SPORT_SL_FLOOR_C", "9"))        # sell when bid <= this
+# ── unconditional firesell band (user 07/30) ─────────────────────────────────
+# Applies to every sport/model ahead of the configured exits. 0 disables an edge.
+SPORT_FIRESELL_HI_C = int(os.getenv("SPORT_FIRESELL_HI_C", "98"))
+SPORT_FIRESELL_LO_C = int(os.getenv("SPORT_FIRESELL_LO_C", "6"))
+
+
+def _firesell_hit(bid_c) -> bool:
+    """True when the bid touched either firesell edge. bid 0 is excluded: no
+    buyer exists, so an exit order cannot fill."""
+    if bid_c is None:
+        return False
+    if SPORT_FIRESELL_HI_C > 0 and bid_c >= SPORT_FIRESELL_HI_C:
+        return True
+    return SPORT_FIRESELL_LO_C > 0 and 0 < bid_c <= SPORT_FIRESELL_LO_C
 _BAND_STRIKES: dict = {}   # ticker -> consecutive cycles seen at/under the stop floor
 # Reversal-flip: sell a held non-favorite when the favorite gets their own
 # double-break, then buy the favorite if in range.  FALSE = never sell early for
@@ -1172,6 +1186,35 @@ async def _tp_guardian(client, traded: set, shared: dict) -> None:
         # through the bid).  If it can't fill it is re-priced to the bid next cycle.
         stopped: set = set()
 
+        # ── UNCONDITIONAL FIRESELL (user 07/30) ────────────────────────────────
+        # Ahead of, and regardless of, the configured ceiling/floor, the strike
+        # debounce and SPORT_STOP_MIN_BID_C: at these extremes the price is no
+        # longer a strategy question. Still scoped to configured sports so this
+        # bot never sells another bot's positions on the shared account, and
+        # still skips a 0 bid (no buyer — an exit cannot fill).
+        _fired: set = set()
+        for p in positions:
+            tk = p.get("ticker", "")
+            sp = str(smap.get(ks._series_of(tk), {}).get("sport", "")).lower()
+            if sp not in _SPORTS_SET:
+                continue
+            if abs(int(float(p.get("position_fp", "0")))) <= 0:
+                continue
+            side = "yes" if float(p.get("position_fp", "0")) >= 0 else "no"
+            try:
+                bid = await v1._bid_price(client, tk, side)
+            except Exception:
+                continue
+            bid_c = round(bid * 100) if bid is not None else None
+            if not _firesell_hit(bid_c):
+                continue
+            why = (f"bid {bid_c}c >= {SPORT_FIRESELL_HI_C}c — locking the win"
+                   if bid_c >= SPORT_FIRESELL_HI_C
+                   else f"bid {bid_c}c <= {SPORT_FIRESELL_LO_C}c — salvaging")
+            if await _exit_position(client, tk, side, "FIRESELL", why, bid_c,
+                                    recheck=_firesell_hit, risk_off=True):
+                _fired.add(tk)
+
         # ── PRICE-BAND EXIT pass (user rule 07/10) ─────────────────────────────
         # Hard ceiling/floor on ANY in-scope open position's live bid, regardless
         # of entry price: take profit at >= SPORT_TP_CEILING_C (near-certain win —
@@ -1182,6 +1225,8 @@ async def _tp_guardian(client, traded: set, shared: dict) -> None:
         if SPORT_TP_CEILING_C > 0 or SPORT_SL_FLOOR_C > 0:
             for p in positions:
                 tk = p.get("ticker", "")
+                if tk in _fired:          # already firesold this cycle
+                    continue
                 sp = str(smap.get(ks._series_of(tk), {}).get("sport", "")).lower()
                 if sp not in _SPORTS_SET:
                     continue
