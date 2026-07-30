@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 
 from sqlalchemy import create_engine, event
@@ -59,6 +60,61 @@ def init_db() -> None:
     _migrate(engine)
 
 
+def _fix_india_signal_times(conn) -> int:
+    """Re-derive india super_signals.logged_at from the wall-clock in ``raw``.
+
+    Runs on every boot rather than once: it is a pure recompute, so rows that
+    are already right land on the same value, and any row re-ingested by an
+    older build gets corrected on the next start.
+    """
+    import json
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import text
+
+    ist = ZoneInfo("Asia/Kolkata")
+    fixed = 0
+    rows = conn.execute(
+        text("SELECT id, raw, logged_at FROM super_signals WHERE category = 'india'")
+    ).fetchall()
+    for sid, raw, stored in rows:
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+            value = (payload.get("logged_at_cst") or "").strip()
+        except (TypeError, ValueError):
+            continue
+        if not value:
+            continue
+        parsed = None
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                parsed = (
+                    datetime.strptime(value, fmt)
+                    .replace(tzinfo=ist)
+                    .astimezone(timezone.utc)
+                    .replace(tzinfo=None)
+                )
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            continue
+        want = parsed.strftime("%Y-%m-%d %H:%M:%S.%f")
+        if str(stored or "")[:19] == want[:19]:
+            continue
+        conn.execute(
+            text("UPDATE super_signals SET logged_at = :ts WHERE id = :id"),
+            {"ts": want, "id": sid},
+        )
+        fixed += 1
+    if fixed:
+        logging.getLogger("app.migrate").info(
+            "corrected logged_at on %s india signal(s) (IST parsed as CST)", fixed
+        )
+    return fixed
+
+
 def _migrate(bind) -> None:
     """Tiny additive migrations — create_all never alters existing tables.
 
@@ -81,6 +137,18 @@ def _migrate(bind) -> None:
                     "ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
+
+        # India signals were ingested with their IST wall-clock parsed as
+        # Central, landing ~10.5h in the future and sorting above genuinely
+        # newer US signals in the 24h A-book. Recompute logged_at from the
+        # original string preserved in raw. Idempotent: rows already correct
+        # recompute to the same value.
+        scols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(super_signals)")).fetchall()
+        }
+        if scols:
+            _fix_india_signal_times(conn)
 
         # trades.is_live: real money or not, for the ledger's LIVE column.
         # NULLABLE on purpose — btc15 v2/v3/v4 write paper and live rows to the

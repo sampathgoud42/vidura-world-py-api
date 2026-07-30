@@ -600,10 +600,32 @@ def config_from_db(db: Session) -> dict | None:
 
 # --- SQLite history: signals + daily snapshots ------------------------------
 
-def _parse_cst(value: str) -> datetime | None:
+# The engines all write wall-clock into columns named ``*_cst``, but the India
+# engine's clock is IST, not Central: a BANKNIFTY row carries
+# stop_deadline_cst=15:30, which is the NSE close (15:30 IST), and its bar
+# times sit inside 09:15-15:30 IST. Parsing those as Central shifted every
+# India signal ~10.5h into the future, so they sorted above genuinely newer US
+# signals in the "past 24h, latest first" A-book — an 01:15 CDT Indian bar
+# appearing above a 09:00 CDT US one.
+_IST = ZoneInfo("Asia/Kolkata")
+_CATEGORY_TZ = {"india": _IST}
+
+
+def signal_tz(category: str | None):
+    """Wall-clock zone the engine for ``category`` writes in."""
+    return _CATEGORY_TZ.get((category or "").strip().lower(), _CST)
+
+
+def _parse_cst(value: str, category: str | None = None) -> datetime | None:
+    """Parse an engine wall-clock string to naive UTC.
+
+    ``category`` selects the source zone; omitting it keeps the historical
+    Central assumption, which is correct for every non-India engine.
+    """
+    tz = signal_tz(category)
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
         try:
-            aware = datetime.strptime(value.strip(), fmt).replace(tzinfo=_CST)
+            aware = datetime.strptime(value.strip(), fmt).replace(tzinfo=tz)
             return aware.astimezone(timezone.utc).replace(tzinfo=None)
         except ValueError:
             continue
@@ -674,7 +696,7 @@ def sync_signals(db: Session, *, include_archive: bool = True, force: bool = Tru
                 "price": _float_or_none(row.get("signal_price")),
                 "accuracy_pct": _float_or_none(row.get("acc_strict_pct")),
                 "bar_time": (row.get("bar_time_cst") or "").strip() or None,
-                "logged_at": _parse_cst(logged),
+                "logged_at": _parse_cst(logged, row.get("category")),
                 "archived": is_archive,
                 "raw": {k: v for k, v in row.items() if k},
             }
@@ -755,7 +777,7 @@ def sync_worker_signals(db: Session, *, force: bool = True) -> dict:
                         price=_float_or_none(row.get("signal_price")),
                         accuracy_pct=_float_or_none(row.get("acc_strict_pct")),
                         bar_time=(row.get("bar_time_cst") or "").strip() or None,
-                        logged_at=_parse_cst(logged),
+                        logged_at=_parse_cst(logged, cat_key),
                         raw={k: v for k, v in row.items() if k},
                     )
                 )
