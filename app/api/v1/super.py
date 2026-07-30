@@ -22,6 +22,7 @@ from app.api.cloud import require_local_runtime
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.services import earnings as earnings_svc
+from app.services import engine_pct
 from app.services import gex0dte
 from app.services import ticker_onboard as onboard
 from app.schemas.super import (
@@ -171,6 +172,42 @@ def refresh_gex0dte(body: Gex0dteRefresh, db: Session = Depends(get_db)) -> dict
     svc.store_payload(db, "gex0dte", view, source="getgamma.io")
     gex0dte.record_hour(db, view)      # and into this hour's history slot
     return view
+
+
+@router.get("/engine-pct", operation_id="getEnginePct")
+def get_engine_pct() -> dict:
+    """Per-category TP/SL race targets, read from each ticker's config.py.
+
+    ``mixed: true`` means the tickers in that category disagree — reported
+    rather than averaged, because it usually means a folder was hand-edited.
+    """
+    require_local_runtime("Reading the engine targets")
+    return engine_pct.read_all()
+
+
+class EnginePctUpdate(BaseModel):
+    """Retarget one category. ``sl_pct`` defaults to ``tp_pct`` (symmetric)."""
+
+    category: str
+    tp_pct: float
+    sl_pct: float | None = None
+
+
+@router.post("/engine-pct", operation_id="setEnginePct")
+def set_engine_pct(payload: EnginePctUpdate, db: Session = Depends(get_db)) -> dict:
+    """Rewrite TP_PCT/SL_PCT for every ticker in a category.
+
+    Takes effect on the next scan cycle. The engine-score cache is
+    fingerprinted on tp/sl so it re-scores itself; the B-book candidate set is
+    not re-discovered, which the response says explicitly.
+    """
+    require_local_runtime("Changing the engine targets")
+    try:
+        return engine_pct.write_category(db, payload.category, payload.tp_pct, payload.sl_pct)
+    except engine_pct.PctError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"config write failed: {exc}") from exc
 
 
 class HeartbeatIn(BaseModel):
