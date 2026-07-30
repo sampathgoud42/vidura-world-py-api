@@ -40,25 +40,27 @@ def test_regime_follows_the_sign_of_net_gex():
     assert neg["regime"] == "NEG" and neg["net_gex"] < 0
 
 
-def test_walls_are_the_heaviest_gamma_strikes_per_side():
+def test_walls_are_the_open_interest_peaks_per_side():
     out = gex0dte.compute(_chain([
-        _c("call", 740, 0.05, 9000),   # biggest call
+        _c("call", 740, 0.05, 9000),   # most call OI
         _c("call", 744, 0.03, 3000),
-        _c("put", 730, 0.045, 8000),   # biggest put
+        _c("put", 726, 0.02, 8000),    # most put OI
         _c("put", 733, 0.04, 4000),
     ]))
     assert out["call_wall"] == 740
-    assert out["put_wall"] == 730
+    assert out["put_wall"] == 726
 
 
-def test_wall_is_by_gamma_exposure_not_open_interest_alone():
-    """A fat-OI strike with negligible gamma must not win the wall."""
+def test_the_put_wall_is_oi_not_the_gamma_peak():
+    """Checked against getgamma 2026-07-30: it showed put wall 726, the max-OI
+    strike, while the put GAMMA peak that day was 738. Ranking by exposure
+    gave the wrong wall, so this pins the OI definition."""
     out = gex0dte.compute(_chain([
-        _c("call", 700, 0.0001, 500000),   # huge OI, no gamma
+        _c("put", 726, 0.01, 20000),   # fat OI, thin gamma  -> the wall
+        _c("put", 738, 0.09, 3000),    # thin OI, fat gamma
         _c("call", 740, 0.05, 9000),
-        _c("put", 730, 0.04, 1000),
     ]))
-    assert out["call_wall"] == 740
+    assert out["put_wall"] == 726
 
 
 def test_flip_is_interpolated_between_the_bracketing_strikes():
@@ -76,13 +78,24 @@ def test_flip_is_none_when_gamma_never_crosses_zero():
     assert out["flip"] is None
 
 
-def test_magnets_bracket_spot():
+def test_magnets_are_the_signed_net_extremes():
+    """getgamma's +GEX / -GEX MAGNET: the single most positive and most
+    negative net-gamma strikes, not the heaviest absolute ones near spot."""
     out = gex0dte.compute(_chain([
-        _c("call", 744, 0.05, 5000), _c("call", 740, 0.06, 9000),
-        _c("put", 736, 0.05, 6000), _c("put", 733, 0.05, 7000),
+        _c("call", 740, 0.06, 9000),   # heaviest POSITIVE net -> +GEX magnet
+        _c("call", 744, 0.01, 500),
+        _c("put", 733, 0.05, 9000),    # heaviest NEGATIVE net -> -GEX magnet
+        _c("put", 736, 0.01, 400),
     ], spot=738.0))
-    assert out["magnet_hi"] >= 738.0
-    assert out["magnet_lo"] < 738.0
+    assert out["magnet_hi"] == 740
+    assert out["magnet_lo"] == 733
+
+
+def test_call_and_put_gex_are_reported_separately():
+    """The dashboard shows "Call: $X | Put: $Y" and total = call - put."""
+    out = gex0dte.compute(_chain([_c("call", 740, 0.05, 1000), _c("put", 730, 0.02, 1000)]))
+    assert out["call_gex"] > 0 and out["put_gex"] > 0
+    assert out["net_gex"] == pytest.approx(out["call_gex"] - out["put_gex"])
 
 
 # ---- robustness -----------------------------------------------------------

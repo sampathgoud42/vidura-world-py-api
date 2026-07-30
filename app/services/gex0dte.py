@@ -104,6 +104,7 @@ def compute(payload: dict) -> dict:
     unit = CONTRACT_MULTIPLIER * spot * spot * 0.01
 
     per_strike: dict[float, dict[str, float]] = {}
+    oi_by_strike: dict[float, dict[str, float]] = {}
     for c in contracts:
         strike = _num(c.get("strike_price"))
         gamma = _num((c.get("greeks") or {}).get("gamma"))
@@ -113,8 +114,8 @@ def compute(payload: dict) -> dict:
         side = str(c.get("contract_type") or "").lower()
         if side not in ("call", "put"):
             continue
-        slot = per_strike.setdefault(strike, {"call": 0.0, "put": 0.0})
-        slot[side] += gamma * oi * unit
+        per_strike.setdefault(strike, {"call": 0.0, "put": 0.0})[side] += gamma * oi * unit
+        oi_by_strike.setdefault(strike, {"call": 0.0, "put": 0.0})[side] += oi
 
     if not per_strike:
         raise GammaError("no contracts carried gamma and open interest")
@@ -123,9 +124,15 @@ def compute(payload: dict) -> dict:
     # dealers are short calls / long puts: call gamma positive, put gamma negative
     net_by_strike = {k: per_strike[k]["call"] - per_strike[k]["put"] for k in strikes_sorted}
     net_gex = sum(net_by_strike.values())
+    call_gex = sum(per_strike[k]["call"] for k in strikes_sorted)
+    put_gex = sum(per_strike[k]["put"] for k in strikes_sorted)
 
-    call_wall = max(strikes_sorted, key=lambda k: per_strike[k]["call"])
-    put_wall = max(strikes_sorted, key=lambda k: per_strike[k]["put"])
+    # Walls are the OPEN-INTEREST peaks per side, not the gamma peaks — checked
+    # against getgamma's own dashboard on 2026-07-30: it showed call wall 740 /
+    # put wall 726, which are max call OI and max put OI. The gamma peak that
+    # day sat at 738, so ranking by exposure gave the wrong put wall.
+    call_wall = max(strikes_sorted, key=lambda k: oi_by_strike[k]["call"])
+    put_wall = max(strikes_sorted, key=lambda k: oi_by_strike[k]["put"])
 
     # gamma flip: where the running total crosses zero, interpolated between
     # the bracketing strikes rather than snapped to one of them
@@ -140,14 +147,13 @@ def compute(payload: dict) -> dict:
             break
         prev_k, prev_run = k, running
 
-    # magnets: the heaviest ABSOLUTE gamma strikes around spot — where price
-    # gets pinned. Reported high-to-low like the desk line.
-    ranked = sorted(strikes_sorted, key=lambda k: abs(net_by_strike[k]), reverse=True)
-    magnets = sorted({k for k in ranked[:6]}, reverse=True)
-    above = [k for k in magnets if k >= spot]
-    below = [k for k in magnets if k < spot]
-    magnet_hi = min(above) if above else (max(magnets) if magnets else None)
-    magnet_lo = max(below) if below else (min(magnets) if magnets else None)
+    # Magnets are the SIGNED extremes, matching getgamma's "+GEX MAGNET" and
+    # "-GEX MAGNET": the single most positive and most negative net-gamma
+    # strikes. (Its dashboard showed +740 / -733 and these reproduce both.)
+    # Not "heaviest absolute near spot" — that picked the wrong pair.
+    magnet_hi = max(strikes_sorted, key=lambda k: net_by_strike[k])   # +GEX
+    magnet_lo = min(strikes_sorted, key=lambda k: net_by_strike[k])   # -GEX
+    magnets = sorted({magnet_hi, magnet_lo}, reverse=True)
 
     regime = "NEG" if net_gex < 0 else "POS"
     return {
@@ -156,6 +162,8 @@ def compute(payload: dict) -> dict:
         "spot": round(spot, 2),
         "regime": regime,
         "net_gex": round(net_gex, 2),
+        "call_gex": round(call_gex, 2),
+        "put_gex": round(put_gex, 2),
         "flip": round(flip, 2) if flip is not None else None,
         "call_wall": call_wall,
         "put_wall": put_wall,

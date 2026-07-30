@@ -160,15 +160,30 @@ def read_worker_rows(path: Path, *, tail: int = 40, cap: int = 30) -> list[dict]
     return list(reversed(rows[-tail:]))[:cap]
 
 
+_EPOCH = datetime(1970, 1, 1)
+
+
+def signal_sort_key(row: dict) -> tuple:
+    """When a signal happened, as a real instant — for ordering ONLY.
+
+    Every engine writes wall-clock into columns named ``*_cst``, but the India
+    engine's clock is IST. Sorting those strings lexically put an 11:45 IST bar
+    (01:15 CDT) above a genuinely newer 09:00 CDT one, because "11:45" > "09:00"
+    as text. Normalise to UTC before comparing; the row itself is untouched, so
+    the UI still shows each engine's own clock and label.
+    """
+    category = row.get("category")
+    logged = _parse_cst((row.get("logged_at_cst") or "").strip(), category)
+    bar = _parse_cst((row.get("bar_time_cst") or "").strip(), category)
+    return (logged or bar or _EPOCH, bar or logged or _EPOCH)
+
+
 def read_central_feed(name: str, *, want_all: bool = False) -> list[dict]:
     super_dir = get_settings().super_dir
     rows = _read_csv_rows(super_dir / name)
     if want_all:
         rows += _read_csv_rows(super_dir / "archive" / name)
-    rows.sort(
-        key=lambda r: f"{r.get('logged_at_cst', '')}|{r.get('bar_time_cst', '')}",
-        reverse=True,
-    )
+    rows.sort(key=signal_sort_key, reverse=True)
     return rows[: 2000 if want_all else 150]
 
 
@@ -497,11 +512,9 @@ def _feed_from_db(db: Session, book: str, *, want_all: bool) -> list[dict]:
     if not want_all:
         stmt = stmt.where(SuperSignal.archived.is_(False))
     rows = [dict(s.raw or {}) for s in db.scalars(stmt).all()]
-    # Exact legacy ordering: lexical DESC on "logged_at_cst|bar_time_cst".
-    rows.sort(
-        key=lambda r: f"{r.get('logged_at_cst', '')}|{r.get('bar_time_cst', '')}",
-        reverse=True,
-    )
+    # Newest first by real instant, not by wall-clock text — the India engine
+    # writes IST into the *_cst columns (see signal_sort_key).
+    rows.sort(key=signal_sort_key, reverse=True)
     return rows
 
 
@@ -561,7 +574,9 @@ def _build_state_uncached(db: Session, *, want_all: bool = False) -> dict:
                 "tickers": tickers,
             }
         )
-    abook.sort(key=lambda r: r.get("bar_time_cst", ""), reverse=True)
+    # newest first ACROSS categories: an IST bar time is not comparable to a
+    # CST one as text, so compare the UTC instants instead
+    abook.sort(key=signal_sort_key, reverse=True)
 
     return {
         "abookOnTop": cfg.get("abookOnTop") is not False,
