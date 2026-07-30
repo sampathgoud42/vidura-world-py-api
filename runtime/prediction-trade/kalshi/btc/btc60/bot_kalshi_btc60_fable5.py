@@ -123,7 +123,10 @@ YES_BID_LO_BONUS = 5        # cents added to bid_lo for YES-side candidates only
 ENTRY_START_MIN  = 10       # no entries in the first 10 min of the hour
 ENTRY_CUTOFF_MIN = 30       # no NEW entries at/after HH:30 (per spec)
 FLATTEN_BEFORE_CLOSE_MIN = 5   # force-flat deadline (min before close)
-MAX_TRADES_PER_HOUR = 6     # circuit breaker on churn
+# One trade per market by default (user 07/30) — for btc60 an hourly event IS
+# the market. Was 6 as a churn circuit-breaker; MAX_TRADES_PER_MARKET is the
+# shared name across every BTC engine.
+MAX_TRADES_PER_HOUR = int(__import__("os").getenv("MAX_TRADES_PER_MARKET", "1"))
 POLL_S           = 10       # order/position/bid poll cadence (seconds)
 POC_REFRESH_S    = 150      # recompute LiquiditySR POC every 2.5 min
 # Portfolio-floor halt REMOVED (user 07/30). Risk is expressed as this bot's

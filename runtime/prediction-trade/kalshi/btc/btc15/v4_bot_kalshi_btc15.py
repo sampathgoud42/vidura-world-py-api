@@ -54,7 +54,10 @@ PROFIT_PCT            = float(os.getenv("KALSHI_PROFIT_PCT", "50"))
 STOP_PCT              = float(os.getenv("KALSHI_STOP_PCT", "60"))
 DRY_RUN               = os.getenv("DRY_RUN_MODE", "TRUE").upper() == "TRUE"
 TIME_SEC_TO_ORDER     = int(os.getenv("TIME_SEC_TO_ORDER", "450"))
-MAX_TRADES_PER_MARKET = int(os.getenv("MAX_TRADES_PER_MARKET", "2"))
+# One trade per market by default (user 07/30). Re-entering the same 15-minute
+# market doubles exposure to a single BTC move that has already gone against
+# the first entry, which is the opposite of diversification.
+MAX_TRADES_PER_MARKET = int(os.getenv("MAX_TRADES_PER_MARKET", "1"))
 RUNNER_CONTRACTS      = int(os.getenv("RUNNER_CONTRACTS", "1"))
 
 # Account-PV floor. DISABLED by default (user 07/30): the Kalshi account is

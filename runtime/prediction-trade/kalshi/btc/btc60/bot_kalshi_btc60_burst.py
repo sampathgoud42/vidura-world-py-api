@@ -64,7 +64,9 @@ RESTART_EXIT_CODE  = 42      # bot exits with this after the 08:00 reset;
 ENTRY_FILL_WAIT_S  = 180     # cancel unfilled maker buy after 3 min
 LAST_ENTRY_MINUTE  = 25      # entry minute-of-hour cutoff (time-stop must fit)
 FLATTEN_BEFORE_MIN = 5       # hard-flatten deadline before close
-MAX_TRADES_PER_HOUR = 3
+# One trade per market by default (user 07/30) — an hourly event IS the
+# market here. Shared name with the other BTC engines.
+MAX_TRADES_PER_HOUR = int(__import__("os").getenv("MAX_TRADES_PER_MARKET", "1"))
 MIN_BANKROLL_HALT  = 25.0
 DAILY_LOSS_HALT_PCT = 10.0   # stop for the day at −10% of day-start
 RESET_HOUR_LOCAL   = 8       # daily bankroll reset, America/Chicago
