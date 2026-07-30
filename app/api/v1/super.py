@@ -139,6 +139,7 @@ def get_gex0dte(db: Session = Depends(get_db)) -> dict:
             status_code=404,
             detail="no 0DTE snapshot yet — press Update 0DTE to fetch one",
         )
+    payload.update(gex0dte.staleness(payload.get("fetched_at")))
     return payload
 
 

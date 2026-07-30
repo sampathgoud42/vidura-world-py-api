@@ -234,6 +234,43 @@ def fmt_signed(value: float | None) -> str:
     return f"{sign}{n:.0f}"
 
 
+PUSH_EVERY_S = 300          # the pusher's own cadence
+STALE_AFTER_S = 11 * 60     # two missed ticks plus slack
+
+
+def staleness(fetched_at) -> dict:
+    """How old the snapshot is, and whether that is a problem right now.
+
+    Age alone is not a fault — outside 08:15-15:30 CST nothing is pushing and
+    an hours-old chain is correct. Inside the window it means the pusher died,
+    and the desk has to SAY so: a card that only reads "updated 23m ago" looks
+    identical whether the feed is idle or broken, which is how a stall goes
+    unnoticed for half a session.
+    """
+    out = {"age_seconds": None, "stale": False, "window_open": _window_open()}
+    if not fetched_at:
+        return out
+    try:
+        ts = datetime.fromisoformat(str(fetched_at).replace("Z", "+00:00"))
+    except ValueError:
+        return out
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    out["age_seconds"] = round(age, 1)
+    out["stale"] = bool(out["window_open"] and age > STALE_AFTER_S)
+    return out
+
+
+def _window_open(now: datetime | None = None) -> bool:
+    """08:15-15:30 CST on a weekday — when a push is actually expected."""
+    now = now or datetime.now(CST)
+    if now.weekday() > 4:
+        return False
+    minutes = now.hour * 60 + now.minute
+    return 8 * 60 + 15 <= minutes <= 15 * 60 + 30
+
+
 def record_hour(db, view: dict) -> None:
     """File ``view`` under its CST trading hour, replacing that hour's row.
 
