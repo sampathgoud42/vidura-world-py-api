@@ -92,6 +92,11 @@ WIDE_MAX_CENTS     = int(os.getenv("BOT152_WIDE_MAX_CENTS", "55"))
 # the current market, rest a sell at TP_CENTS for the held side/quantity.
 TP_CENTS    = int(os.getenv("BOT152_TP_CENTS", "90"))
 TP_AT_MIN   = int(os.getenv("BOT152_TP_AT_MIN", "10"))
+# Per-trade profit target as a PERCENT OVER ENTRY (user 07/30). When > 0 this
+# replaces the fixed TP_CENTS price: tp = entry x (1 + pct/100), clamped to
+# 1-99c. 0 keeps the historical behaviour (a flat 90c sell regardless of what
+# the fill cost), which pays very differently from a 45c entry than a 70c one.
+TP_PCT      = float(os.getenv("BOT152_TP_PCT", "0") or 0)
 # band watcher: async poll cadence and how close to market close entries stop.
 # 180s = watch until market minute 12; NO orders in the last 3 minutes even if
 # the price is in range (user rule).
@@ -478,9 +483,29 @@ async def position_contracts(c: KalshiClient, ticker: str) -> int:
     return 0
 
 
-async def tp_seller(c: KalshiClient, ticker: str, side: str, mark: datetime) -> None:
+def _tp_price(entry_c: int | None) -> int:
+    """Take-profit price for a fill at ``entry_c``: BOT152_TP_PCT over entry
+    when a percent target is set, else the flat TP_CENTS.
+
+    Rounds half UP, not with round()'s banker's rounding: 70c +15% is 80.5,
+    and round() would give 80 — quietly delivering 14.3% instead of the 15%
+    that was asked for. Always at least entry+1 so a small percent on a cheap
+    fill can never target a loss.
+    """
+    if TP_PCT > 0 and entry_c:
+        target = int(entry_c * (1 + TP_PCT / 100.0) + 0.5)
+        return max(entry_c + 1, min(99, target))
+    return TP_CENTS
+
+
+async def tp_seller(c: KalshiClient, ticker: str, side: str, mark: datetime,
+                    entry_c: int | None = None) -> None:
     """At mark+TP_AT_MIN (or 30s after a late entry): if an open position
-    exists, rest a sell at TP_CENTS."""
+    exists, rest a sell at the take-profit price.
+
+    That price is BOT152_TP_PCT over ``entry_c`` when a percent target is set,
+    otherwise the flat TP_CENTS."""
+    tp_c = _tp_price(entry_c)
     due = max(mark + timedelta(minutes=TP_AT_MIN),
               _now_ct() + timedelta(seconds=30))
     delay = (due - _now_ct()).total_seconds()
@@ -488,8 +513,9 @@ async def tp_seller(c: KalshiClient, ticker: str, side: str, mark: datetime) -> 
         await asyncio.sleep(delay)
     if DRY_RUN:
         log(f"  [DRY] [TP ] {ticker}: would verify position and SELL "
-            f"{side.upper()} ×{CONTRACTS} @ {TP_CENTS}¢")
-        log_trade(ticker, mark, {}, side, None, action="sell", price=TP_CENTS)
+            f"{side.upper()} ×{CONTRACTS} @ {tp_c}¢"
+            + (f" (entry {entry_c}¢ +{TP_PCT:g}%)" if TP_PCT > 0 and entry_c else ""))
+        log_trade(ticker, mark, {}, side, None, action="sell", price=tp_c)
         return
     # ── DOUBLE-CONFIRM the position (partial fills!): two reads ~2s apart; the
     # sell quantity is ALWAYS the latest API value, never the intended buy size.
@@ -512,14 +538,15 @@ async def tp_seller(c: KalshiClient, ticker: str, side: str, mark: datetime) -> 
     if held_side != side:
         log(f"[TP  ] {ticker}: held side {held_side.upper()} differs from signal side "
             f"{side.upper()} — selling what is actually held")
-    order = _mk_order(ticker, "sell", held_side, held, TP_CENTS)
-    log(f"  [TP ] SELL {held_side.upper()} ×{held} @ {TP_CENTS}¢  {ticker}  "
-        f"(confirmed {pos1}→{pos2})")
+    order = _mk_order(ticker, "sell", held_side, held, tp_c)
+    log(f"  [TP ] SELL {held_side.upper()} ×{held} @ {tp_c}¢  {ticker}  "
+        + (f"(entry {entry_c}¢ +{TP_PCT:g}%, " if TP_PCT > 0 and entry_c else "(")
+        + f"confirmed {pos1}→{pos2})")
     try:
         r = await c.req("POST", ORDER_CREATE_PATH, body=order)
         log(f"  [TP ] resp: {json.dumps(r)[:200]}")
         log_trade(ticker, mark, {}, held_side, r, action="sell",
-                  price=TP_CENTS, contracts=held)
+                  price=tp_c, contracts=held)
     except Exception as e:
         log(f"  [TP ] FAILED: {e}")
 
@@ -640,14 +667,15 @@ async def handle_market(c: KalshiClient, m: dict, st: dict) -> None:
     save_state(st)
     # take-profit leg runs in the background at market minute TP_AT_MIN;
     # no stop-loss — anything unsold rides to settlement.
-    asyncio.create_task(tp_seller(c, ticker, side, mark))
+    asyncio.create_task(tp_seller(c, ticker, side, mark, entry_c=band_hi))
 
 
 async def main() -> None:
     log(f"bot_btc_15_2 starting  DRY_RUN={DRY_RUN}  contracts={CONTRACTS}  "
         f"entry band {MIN_CENTS}–{MAX_CENTS}¢ (widen to ≤{WIDE_MAX_CENTS}¢ when "
         f"initial ask>{WIDE_TRIGGER_CENTS}¢)  "
-        f"TP sell @{TP_CENTS}¢ at market min {TP_AT_MIN}  series={SERIES}")
+        + (f"TP +{TP_PCT:g}% over entry" if TP_PCT > 0 else f"TP sell @{TP_CENTS}¢")
+        + f" at market min {TP_AT_MIN}  series={SERIES}")
     log(f"auth: key_id …{API_KEY_ID[-4:] if API_KEY_ID else 'MISSING'}  "
         f"pem={Path(PRIVATE_KEY_PATH).resolve()}  cwd={Path.cwd()}")
     log(f"signal csv: {SIGNAL_CSV}")

@@ -79,6 +79,11 @@ from __future__ import annotations
 #  HARD-CODED TRADE PARAMETERS  (learner adjusts within [min,max] bounds)
 # ══════════════════════════════════════════════════════════════════════════
 TAKE_PROFIT_PCT  = 15.0     # sell when bid >= entry * 1.15   (bounds 12-20)
+# Per-trade profit target override (user 07/30). When BTC60_TP_PCT is set the
+# user's number WINS over both the persisted state file and the learner —
+# otherwise an explicit target would silently drift away within a few trades
+# and the input would be a lie. Unset (0) keeps the self-tuning behaviour.
+TP_PCT_OVERRIDE  = float(__import__("os").getenv("BTC60_TP_PCT", "0") or 0)
 STOP_LOSS_PCT    = 30.0     # dump when bid <= entry * 0.70   (bounds 20-35)
 PV_PCT_PER_TRADE = 10.0     # size each trade at 10% of the BTC BANKROLL (5-15)
 
@@ -786,6 +791,11 @@ class Learner:
                               f"bid_lo={self.bid_lo} n={self.n_trades}")
         except Exception as e:
             _log("LEARN", f"state load failed ({e}) - using defaults")
+        if TP_PCT_OVERRIDE > 0:
+            # applied AFTER the state load so the stored tp_pct cannot win
+            self.tp_pct = TP_PCT_OVERRIDE
+            _log("LEARN", f"tp_pct pinned to {self.tp_pct:.1f}% by BTC60_TP_PCT "
+                          f"- the learner will not adjust it")
 
     def _save(self) -> None:
         try:
@@ -889,7 +899,9 @@ class Learner:
 
         tp_hits = sum(1 for r in rows if r.get("exit_reason") == "TAKE_PROFIT")
         frac = tp_hits / len(rows)
-        if frac < 0.40 and self.tp_pct > TP_BOUNDS[0]:
+        if TP_PCT_OVERRIDE > 0:
+            pass                      # user pinned the target; do not drift it
+        elif frac < 0.40 and self.tp_pct > TP_BOUNDS[0]:
             self.tp_pct -= 1.0
             _log("LEARN", f"tp_pct -> {self.tp_pct:.1f} (only {frac:.0%} of "
                           f"exits reached TP)")

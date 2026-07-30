@@ -47,6 +47,10 @@ FIXED_CONTRACTS    = 1       # owner 2026-07-13: trade a FIXED 1 contract on the
                              # new research-signal source (cautious start). Set
                              # to 0 to fall back to the MAX_PV_PCT % sizing.
 TP_CENTS           = 20      # take-profit offset
+# Per-trade profit target as a PERCENT over entry (user 07/30). When set it
+# replaces the flat +20c offset, which is a very different trade from a 30c
+# entry than from a 70c one: tp = entry x (1 + pct/100).
+TP_PCT_OVERRIDE    = float(__import__("os").getenv("BTC60_TP_PCT", "0") or 0)
 SL_CENTS           = 15      # stop-loss offset
 TIME_STOP_MIN      = 30      # signal horizon
 ENTRY_BID_LO       = 30      # entry band widened 40-65 -> 30-70 (owner,
@@ -649,7 +653,10 @@ async def monitor_position(c: KalshiClient, ticker: str, side: str,
                            entry: int, contracts: int,
                            deadline: datetime) -> tuple[str, int]:
     """TP +20c (resting maker), SL −15c (taker), TIME-STOP, hard deadline."""
-    tp = min(99, entry + TP_CENTS)
+    # half-UP, not round()'s banker's rounding: 30c +15% is 34.5 and round()
+    # would give 34, delivering 13.3% instead of the 15% asked for.
+    tp = (min(99, max(entry + 1, int(entry * (1 + TP_PCT_OVERRIDE / 100.0) + 0.5)))
+          if TP_PCT_OVERRIDE > 0 else min(99, entry + TP_CENTS))
     sl = max(1, entry - SL_CENTS)
     time_stop = _utc_now() + timedelta(minutes=TIME_STOP_MIN)
     hard = min(deadline, time_stop)

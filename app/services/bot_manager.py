@@ -131,17 +131,39 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
         env["TARGET_PORTFOLIO_PCT"] = f"{options.target_pct:g}"
 
 
+def _trade_target_env(env: dict[str, str], options: "BotStartOptions") -> None:
+    """PER-TRADE profit target, % over entry — for EVERY bot family.
+
+    Deliberately outside _sports_env: that one only runs for the sports bot,
+    so anything set there never reaches a BTC launch.
+
+    The BTC engines each express take-profit differently, so set all three
+    knobs and let the one the chosen engine reads win — the names do not
+    collide, and an engine that ignores its knob is unaffected:
+        btc15 v2/v3/v4 : KALSHI_PROFIT_PCT  (already env-driven)
+        btc15 v5       : BOT152_TP_PCT      (else a flat 90c sell)
+        btc60 both     : BTC60_TP_PCT       (fable5 also pins its learner)
+    """
+    if options.tp_pct is None:
+        return
+    pct = f"{options.tp_pct:g}"
+    env["KALSHI_PROFIT_PCT"] = pct
+    env["BOT152_TP_PCT"] = pct
+    env["BTC60_TP_PCT"] = pct
+
+
 class BotStartOptions:
     """Normalized start options passed through from the request schema."""
 
     def __init__(
         self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
-        contracts=None, kill_existing: bool = False,
+        contracts=None, kill_existing: bool = False, tp_pct=None,
     ):
         self.mode = mode
         self.sports = sports
         self.sport_settings = sport_settings
         self.target_pct = target_pct
+        self.tp_pct = tp_pct
         self.contracts = contracts
         self.kill_existing = kill_existing
 
@@ -210,6 +232,8 @@ def _launch_plan(
         _sports_env(env, options)
     else:  # pragma: no cover - registry misconfiguration
         raise BotManagerError(f"Unknown launch style {spec.launch_style}", 500)
+    # family-independent options go last so no launch style can skip them
+    _trade_target_env(env, options)
     return argv, cwd, env
 
 
@@ -389,6 +413,8 @@ def start_bot(
             }
         if options.target_pct is not None:
             extra["target_pct"] = options.target_pct
+        if options.tp_pct is not None:
+            extra["tp_pct"] = options.tp_pct
         run = BotRun(
             user_id=user.user_id,
             bot_key=bot_key,

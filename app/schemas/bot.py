@@ -57,6 +57,17 @@ class BotStartRequest(BaseModel):
         default=None, ge=0, le=1000,
         description="profit target % on the bankroll/portfolio (TARGET_PORTFOLIO_PCT); bot halts when reached",
     )
+    tp_pct: float | None = Field(
+        default=None, gt=0, le=500,
+        description=(
+            "PER-TRADE profit target, % over the entry price — distinct from "
+            "target_pct, which is a whole-session halt. Routed to whichever knob "
+            "the chosen BTC engine reads: KALSHI_PROFIT_PCT (btc15 v2/v3/v4), "
+            "BOT152_TP_PCT (btc15 v5), BTC60_TP_PCT (btc60 fable5/burst). On "
+            "btc60 fable5 it also pins the learner so the target cannot drift."
+        ),
+        examples=[15],
+    )
     kill_existing: bool = Field(
         default=False,
         description="kill any process already running this bot — including copies "
