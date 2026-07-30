@@ -68,6 +68,15 @@ class BotStartRequest(BaseModel):
         ),
         examples=[15],
     )
+    bank: float | None = Field(
+        default=None, gt=0, le=1_000_000,
+        description=(
+            "Bankroll for THIS bot, in dollars. Risk is per bot, not on the "
+            "shared Kalshi account: btc60 reseeds its own ledger from this and "
+            "target_pct is then measured on it. Sports uses sport_settings[].bank."
+        ),
+        examples=[250],
+    )
     kill_existing: bool = Field(
         default=False,
         description="kill any process already running this bot — including copies "

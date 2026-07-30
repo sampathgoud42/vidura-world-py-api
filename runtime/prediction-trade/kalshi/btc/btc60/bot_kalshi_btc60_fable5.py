@@ -93,7 +93,16 @@ PV_PCT_PER_TRADE = 10.0     # size each trade at 10% of the BTC BANKROLL (5-15)
 # only by this bot's realized P&L and persisted in the state file (edit
 # "bankroll" there to top up / draw down).  Account cash is only consulted
 # as a spend CAP so we never place orders the account can't fund.
-BTC_BANKROLL_SEED = 100.0   # $ initial BTC-market bankroll (first run only)
+BTC_BANKROLL_SEED = float(__import__("os").getenv("BTC_BANKROLL", "100"))
+# $ initial BTC-market bankroll. BTC_BANKROLL (set per engine bay from the UI)
+# RESEEDS the ledger on start rather than only on first run, so "this bot
+# trades $250" means what it says instead of being overridden by whatever the
+# state file happens to hold.
+BTC_BANKROLL_RESEED = bool(__import__("os").getenv("BTC_BANKROLL"))
+# Profit target measured on THIS BOT'S bankroll, not the shared account's
+# portfolio value (user 07/30): halt new entries once realized P&L has grown
+# the bankroll by this %. 0 = run indefinitely.
+BTC_TARGET_PCT = float(__import__("os").getenv("BTC60_TARGET_PCT", "0") or 0)
 
 ENTRY_BID_LO     = 65       # favorite's bid band, cents      (learner: lo 65-72)
 ENTRY_BID_HI     = 80
@@ -117,7 +126,12 @@ FLATTEN_BEFORE_CLOSE_MIN = 5   # force-flat deadline (min before close)
 MAX_TRADES_PER_HOUR = 6     # circuit breaker on churn
 POLL_S           = 10       # order/position/bid poll cadence (seconds)
 POC_REFRESH_S    = 150      # recompute LiquiditySR POC every 2.5 min
-MIN_PORTFOLIO_HALT = 25.0   # stop trading (no shutdown) below this PV
+# Portfolio-floor halt REMOVED (user 07/30). Risk is expressed as this bot's
+# own bankroll plus BTC60_TARGET_PCT on it; a floor is redundant because the
+# bankroll already caps what can be spent, and it used to stop the bot dead on
+# a drawdown that the target logic handles. Set BTC60_MIN_BANKROLL to a
+# positive number only if you deliberately want the old behaviour back.
+MIN_PORTFOLIO_HALT = float(__import__("os").getenv("BTC60_MIN_BANKROLL", "0") or 0)
 SERIES           = "KXBTCD" # Kalshi hourly BTC series
 
 # A candidate only fires when the most recent STRONG BUY/SELL within this
@@ -796,6 +810,30 @@ class Learner:
             self.tp_pct = TP_PCT_OVERRIDE
             _log("LEARN", f"tp_pct pinned to {self.tp_pct:.1f}% by BTC60_TP_PCT "
                           f"- the learner will not adjust it")
+        if BTC_BANKROLL_RESEED:
+            # an explicit per-bay bankroll reseeds the ledger, also after the
+            # state load, so the number the operator typed is the one traded
+            self.bankroll = BTC_BANKROLL_SEED
+            _log("LEARN", f"bankroll reseeded to ${self.bankroll:.2f} by BTC_BANKROLL")
+        # profit target is measured on THIS bot's bankroll, never the shared
+        # account's portfolio value
+        self.start_bankroll = self.bankroll
+        self.halted = False
+
+    def target_reached(self) -> bool:
+        """True once realized P&L has grown this bot's own bankroll by
+        BTC60_TARGET_PCT. No target set (0) = never halts."""
+        if BTC_TARGET_PCT <= 0 or not self.start_bankroll:
+            return False
+        goal = self.start_bankroll * (1 + BTC_TARGET_PCT / 100.0)
+        if self.bankroll < goal:
+            return False
+        if not self.halted:
+            self.halted = True
+            _log("TARGET", f"bankroll ${self.bankroll:.2f} >= ${goal:.2f} "
+                           f"(+{BTC_TARGET_PCT:.0f}% on ${self.start_bankroll:.2f}) "
+                           f"- no new entries")
+        return True
 
     def _save(self) -> None:
         try:
@@ -1181,7 +1219,10 @@ async def run_bot() -> None:
                     continue
 
                 bank = learner.bankroll
-                if bank < MIN_PORTFOLIO_HALT:
+                # profit target on THIS bot's bankroll (not the shared account)
+                if learner.target_reached():
+                    return
+                if MIN_PORTFOLIO_HALT > 0 and bank < MIN_PORTFOLIO_HALT:
                     _log("HALT", f"BTC bankroll ${bank:.2f} < "
                                  f"${MIN_PORTFOLIO_HALT} - stopping "
                                  f"(no new trades)")

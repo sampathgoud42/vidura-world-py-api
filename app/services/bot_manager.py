@@ -131,6 +131,26 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
         env["TARGET_PORTFOLIO_PCT"] = f"{options.target_pct:g}"
 
 
+def _bankroll_env(env: dict[str, str], options: "BotStartOptions") -> None:
+    """Per-bot bankroll and a profit target measured ON THAT BANKROLL.
+
+    Replaces the account-wide halts (user 07/30). The Kalshi account is shared
+    across the sports, BTC and perp bots, so a floor or target on its joint
+    portfolio value let one bot's drawdown stop the others. Each bot now gets
+    its own capital and its own finish line:
+
+        btc60  BTC_BANKROLL reseeds its ledger, BTC60_TARGET_PCT halts new
+               entries once realized P&L has grown that ledger by the percent.
+
+    Left deliberately unset when the caller passes nothing, so each engine
+    keeps its own default.
+    """
+    if options.bank is not None:
+        env["BTC_BANKROLL"] = f"{options.bank:g}"
+    if options.target_pct is not None:
+        env["BTC60_TARGET_PCT"] = f"{options.target_pct:g}"
+
+
 def _trade_target_env(env: dict[str, str], options: "BotStartOptions") -> None:
     """PER-TRADE profit target, % over entry — for EVERY bot family.
 
@@ -157,13 +177,14 @@ class BotStartOptions:
 
     def __init__(
         self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
-        contracts=None, kill_existing: bool = False, tp_pct=None,
+        contracts=None, kill_existing: bool = False, tp_pct=None, bank=None,
     ):
         self.mode = mode
         self.sports = sports
         self.sport_settings = sport_settings
         self.target_pct = target_pct
         self.tp_pct = tp_pct
+        self.bank = bank
         self.contracts = contracts
         self.kill_existing = kill_existing
 
@@ -190,11 +211,15 @@ def _launch_plan(
     trade_dir.mkdir(exist_ok=True)
     log_dir.mkdir(exist_ok=True)
 
-    if options.mode in ("paper", "mock"):
-        # Paper runs must not be blocked by the REAL account balance: the
-        # btc15 family halts when the live portfolio is under this floor
-        # ($100 default), which stops paper sessions on a small account.
-        env.setdefault("DO_NOT_BUY_IF_PORTFOLIO_BELOW", "0")
+    # Portfolio-floor halt is OFF for every mode (user 07/30). The btc15
+    # family defaults to halting whenever the SHARED account's portfolio value
+    # drops under $100 — but the account is shared with the sports and perp
+    # bots, so one bot's drawdown silently stopped the others, and a small
+    # balance stopped everything. Risk is now expressed per bot as a bankroll
+    # plus a target on that bankroll, not as a floor on the joint account.
+    # NOT setdefault: an inherited value from the operator's shell must not
+    # quietly re-arm the halt.
+    env["DO_NOT_BUY_IF_PORTFOLIO_BELOW"] = "0"
 
     if spec.launch_style == "cwd_customer":
         # btc15 family: CWD supplies .env + PEM.  Redirect its outputs into
@@ -234,6 +259,7 @@ def _launch_plan(
         raise BotManagerError(f"Unknown launch style {spec.launch_style}", 500)
     # family-independent options go last so no launch style can skip them
     _trade_target_env(env, options)
+    _bankroll_env(env, options)
     return argv, cwd, env
 
 
@@ -415,6 +441,8 @@ def start_bot(
             extra["target_pct"] = options.target_pct
         if options.tp_pct is not None:
             extra["tp_pct"] = options.tp_pct
+        if options.bank is not None:
+            extra["bank"] = options.bank
         run = BotRun(
             user_id=user.user_id,
             bot_key=bot_key,
