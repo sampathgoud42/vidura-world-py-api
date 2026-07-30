@@ -68,7 +68,9 @@ def test_tp_pct_sets_every_engine_knob():
 
 def test_tp_pct_is_separate_from_the_session_halt_target(tmp_path):
     env = _btc_launch_env(tmp_path, 20)
-    assert "TARGET_PORTFOLIO_PCT" not in env, (
+    # explicitly 0 rather than absent: the account-wide target is disabled for
+    # every bot, and a per-trade target must not switch it back on
+    assert env.get("TARGET_PORTFOLIO_PCT") == "0", (
         "the per-trade target must not also halt the session"
     )
 

@@ -72,6 +72,11 @@ def _base_env(mode: str = "paper") -> dict[str, str]:
             # Never allow a bot halt to power off the host.
             "HALT_MACHINE_SHUTDOWN": "FALSE",
             "PERP_BUY": "FALSE",
+            # Account-wide profit target OFF for every bot (user 07/30).
+            # The account is shared, so scoring one bot against its joint
+            # value is meaningless; targets are per-bot, on that bot's own
+            # bankroll. _sports_env re-sets this only when sports asks.
+            "TARGET_PORTFOLIO_PCT": "0",
         }
     )
     if mode == "live":
@@ -148,6 +153,9 @@ def _bankroll_env(env: dict[str, str], options: "BotStartOptions") -> None:
     if options.bank is not None:
         env["BTC_BANKROLL"] = f"{options.bank:g}"
     if options.target_pct is not None:
+        # every BTC engine reads its family's name; each launch is its own
+        # process, so the two never collide
+        env["BTC15_TARGET_PCT"] = f"{options.target_pct:g}"
         env["BTC60_TARGET_PCT"] = f"{options.target_pct:g}"
 
 

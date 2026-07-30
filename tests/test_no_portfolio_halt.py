@@ -93,10 +93,49 @@ def test_btc60_floor_defaults_to_disabled():
 
 # ---- per-bot bankroll + target -------------------------------------------
 
-def test_bank_and_target_reach_a_btc_launch(tmp_path):
-    env = _env(tmp_path, bot_key="btc60", bank=250, target_pct=40)
+@pytest.mark.parametrize("bot_key", ["btc15", "btc60"])
+def test_bank_and_target_reach_a_btc_launch(tmp_path, bot_key):
+    env = _env(tmp_path, bot_key=bot_key, bank=250, target_pct=40)
     assert env["BTC_BANKROLL"] == "250"
+    assert env["BTC15_TARGET_PCT"] == "40"
     assert env["BTC60_TARGET_PCT"] == "40"
+
+
+@pytest.mark.parametrize("bot_key", ["btc15", "btc60", "sports"])
+def test_account_wide_target_is_off_unless_sports_asks(tmp_path, bot_key):
+    """A TARGET_PORTFOLIO_PCT inherited from the shell must not score a bot
+    against the shared account."""
+    env = _env(tmp_path, bot_key=bot_key, bank=250, target_pct=40)
+    if bot_key == "sports":
+        return  # sports still maps target_pct onto its own bank logic
+    assert env["TARGET_PORTFOLIO_PCT"] == "0"
+
+
+def test_btc15_target_is_measured_on_its_own_bankroll():
+    src = (RUNTIME / "btc" / "btc15" / "v4_bot_kalshi_btc15.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert "class Bankroll" in src, "btc15 has no bankroll ledger"
+    assert "self.start * (1 + BTC15_TARGET_PCT / 100.0)" in src
+    assert "if BANKROLL.target_reached():" in src, "the target never gates new orders"
+    assert "BANKROLL.settle(pnl)" in src, "the ledger never moves on realized P&L"
+
+
+def test_btc15_floor_defaults_to_disabled():
+    src = (RUNTIME / "btc" / "btc15" / "v4_bot_kalshi_btc15.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert 'getenv("DO_NOT_BUY_IF_PORTFOLIO_BELOW", "0")' in src
+    assert "if DO_NOT_BUY_IF_PORTFOLIO_BELOW > 0 and pv < DO_NOT_BUY_IF_PORTFOLIO_BELOW:" in src
+
+
+def test_btc15_bankroll_reseeds_only_when_the_seed_changes():
+    src = (RUNTIME / "btc" / "btc15" / "v4_bot_kalshi_btc15.py").read_text(
+        encoding="utf-8", errors="replace"
+    )
+    assert 'float(d.get("start", 0)) == self.start' in src, (
+        "a new BTC_BANKROLL would be overwritten by the persisted balance"
+    )
 
 
 def test_nothing_is_set_when_no_bankroll_is_given(tmp_path):

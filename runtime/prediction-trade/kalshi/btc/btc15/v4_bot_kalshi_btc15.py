@@ -57,7 +57,21 @@ TIME_SEC_TO_ORDER     = int(os.getenv("TIME_SEC_TO_ORDER", "450"))
 MAX_TRADES_PER_MARKET = int(os.getenv("MAX_TRADES_PER_MARKET", "2"))
 RUNNER_CONTRACTS      = int(os.getenv("RUNNER_CONTRACTS", "1"))
 
-DO_NOT_BUY_IF_PORTFOLIO_BELOW = int(os.getenv("DO_NOT_BUY_IF_PORTFOLIO_BELOW", "100"))
+# Account-PV floor. DISABLED by default (user 07/30): the Kalshi account is
+# shared with the sports/btc60/perp bots, so a floor on its joint value let one
+# bot's drawdown halt the others. Risk lives in this bot's own bankroll now.
+# Set a positive number only to deliberately restore the old behaviour.
+DO_NOT_BUY_IF_PORTFOLIO_BELOW = int(os.getenv("DO_NOT_BUY_IF_PORTFOLIO_BELOW", "0") or 0)
+
+# ── This bot's OWN bankroll (user 07/30) ─────────────────────────────────────
+# Same contract as btc60 and the sports banks: BTC_BANKROLL is the capital
+# THIS bot trades, BTC15_TARGET_PCT is the profit target measured on it, and
+# the ledger moves only on this bot's realized P&L — never the shared account
+# balance. The ledger is persisted so a restart resumes where it left off; an
+# explicit BTC_BANKROLL reseeds it so the number the operator typed is the one
+# traded.
+BTC15_BANKROLL   = float(os.getenv("BTC_BANKROLL", "0") or 0)
+BTC15_TARGET_PCT = float(os.getenv("BTC15_TARGET_PCT", "0") or 0)
 
 # Profit-ratchet for the MIN-PV floor above.  On every WINNING trade the floor
 # ratchets UP (never down) to:  max(floor, pv_after - PORTFOLIO_FLOOR_BUFFER),
@@ -337,6 +351,77 @@ def init_csv() -> None:
             csv.writer(f).writerow(_CSV_COLS)
 
 
+class Bankroll:
+    """This bot's own capital ledger — the btc60 / sports-bank contract.
+
+    Seeded from BTC_BANKROLL, moved ONLY by this bot's realized P&L, and
+    persisted next to the trade CSV so a restart resumes the same ledger.
+    The shared Kalshi account balance is never the score.
+    """
+
+    def __init__(self) -> None:
+        self.enabled = BTC15_BANKROLL > 0
+        self.start = BTC15_BANKROLL
+        self.balance = BTC15_BANKROLL
+        self._halted = False
+        self._load()
+
+    @property
+    def _path(self) -> Path:
+        return Path(CSV_FILE).parent / "btc15_bankroll.json"
+
+    def _load(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            if self._path.is_file():
+                d = json.loads(self._path.read_text())
+                # an explicit BTC_BANKROLL reseeds; only the running balance
+                # is restored when the seed is unchanged
+                if float(d.get("start", 0)) == self.start:
+                    self.balance = float(d.get("balance", self.start))
+        except Exception as e:                       # never block a start
+            print(f"  [BANK] state load failed ({e}) — seeding ${self.start:.2f}")
+        print(f"  [BANK] bankroll ${self.balance:.2f} "
+              f"(seed ${self.start:.2f}"
+              + (f", target +{BTC15_TARGET_PCT:.0f}%" if BTC15_TARGET_PCT > 0 else "")
+              + ")")
+
+    def _save(self) -> None:
+        if not self.enabled:
+            return
+        try:
+            self._path.write_text(json.dumps(
+                {"start": self.start, "balance": round(self.balance, 2)}, indent=2))
+        except Exception as e:
+            print(f"  [BANK] state save failed: {e}")
+
+    def settle(self, pnl: float) -> None:
+        """Apply one trade's realized P&L."""
+        if not self.enabled or pnl is None:
+            return
+        self.balance += float(pnl)
+        self._save()
+        print(f"  [BANK] {float(pnl):+.2f} → bankroll ${self.balance:.2f}")
+
+    def target_reached(self) -> bool:
+        """True once realized P&L has grown THIS bot's bankroll by
+        BTC15_TARGET_PCT. No bankroll or no target = never halts."""
+        if not self.enabled or BTC15_TARGET_PCT <= 0 or self.start <= 0:
+            return False
+        goal = self.start * (1 + BTC15_TARGET_PCT / 100.0)
+        if self.balance < goal:
+            return False
+        if not self._halted:
+            self._halted = True
+            print(f"  [BANK-TARGET] bankroll ${self.balance:.2f} >= ${goal:.2f} "
+                  f"(+{BTC15_TARGET_PCT:.0f}% on ${self.start:.2f}) — no new orders")
+        return True
+
+
+BANKROLL = Bankroll()
+
+
 def log_trade(
     ticker: str, mode: str, direction: str, contracts: int,
     entry: float, exit_: float, pnl: float, result: str, pv: float,
@@ -392,6 +477,9 @@ def log_trade(
             returns_str,
             _fmt(max_loss_pct), _fmt(max_profit_pct), signal_source or "",
         ])
+    # Single funnel for realized P&L, so this bot's own bankroll ledger moves
+    # exactly once per recorded trade.
+    BANKROLL.settle(pnl)
 
 
 def compute_prediction_win_rate() -> dict:
@@ -1658,11 +1746,24 @@ async def run() -> None:
                 print(f"  Portfolio: ${pv:.2f}")
                 # Establish the profit-ratchet buffer once, from the starting
                 # portfolio: buffer = starting_pv - starting_floor (≥ 0).
-                if _floor_buffer is None:
+                # ── BANK-TARGET: stop opening new trades once realized P&L has
+                #    grown THIS bot's own bankroll by BTC15_TARGET_PCT. Replaces
+                #    the account-PV target below, which scored this bot against
+                #    a balance the sports/btc60/perp bots also move.
+                if BANKROLL.target_reached():
+                    await _halt_and_shutdown(
+                        c, ticker,
+                        reason_tag="BANK-TARGET HALT",
+                        reason_msg=(f"bankroll ${BANKROLL.balance:.2f} reached "
+                                    f"+{BTC15_TARGET_PCT:.0f}% on "
+                                    f"${BANKROLL.start:.2f} — no new orders."),
+                    )
+                    return
+                if DO_NOT_BUY_IF_PORTFOLIO_BELOW > 0 and _floor_buffer is None:
                     _floor_buffer = max(0.0, pv - DO_NOT_BUY_IF_PORTFOLIO_BELOW)
                     print(f"  [MIN-PV] profit-ratchet buffer = ${_floor_buffer:.2f} "
                           f"(floor rises to pv−buffer on each win)")
-                if pv < DO_NOT_BUY_IF_PORTFOLIO_BELOW:
+                if DO_NOT_BUY_IF_PORTFOLIO_BELOW > 0 and pv < DO_NOT_BUY_IF_PORTFOLIO_BELOW:
                     await _halt_and_shutdown(
                         c, ticker,
                         reason_tag="MIN-PV HALT",
