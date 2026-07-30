@@ -23,6 +23,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.services import earnings as earnings_svc
 from app.services import gex0dte
+from app.services import ticker_onboard as onboard
 from app.schemas.super import (
     SnapshotOut,
     SuperConfigUpdate,
@@ -163,7 +164,63 @@ def refresh_gex0dte(body: Gex0dteRefresh, db: Session = Depends(get_db)) -> dict
     except gex0dte.GammaError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     svc.store_payload(db, "gex0dte", view, source="getgamma.io")
+    gex0dte.record_hour(db, view)      # and into this hour's history slot
     return view
+
+
+class AddTickerRequest(BaseModel):
+    """Onboard one ticker into an existing category, on the default engines."""
+
+    category: str
+    ticker: str
+    label: str | None = None
+
+
+@router.post("/tickers", operation_id="addSuperTicker")
+def add_ticker(payload: AddTickerRequest, db: Session = Depends(get_db)) -> dict:
+    """Scaffold, register and bootstrap a new ticker in a category.
+
+    Returns as soon as the folder and registry entry exist; the B-book build
+    (60 days of bars) runs detached, so poll ``/tickers/{id}/status`` for it.
+    The supervisors pick the ticker up on their next cycle — they re-read the
+    registry — and unconditionally after a restart.
+    """
+    require_local_runtime("Onboarding a ticker")
+    try:
+        return onboard.add_ticker(db, payload.category, payload.ticker, payload.label)
+    except onboard.OnboardError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"onboarding failed: {exc}") from exc
+
+
+@router.get("/tickers/{ticker_id}/status", operation_id="getSuperTickerStatus")
+def ticker_status(ticker_id: str) -> dict:
+    """Whether the background bootstrap has produced a playbook yet."""
+    require_local_runtime("Reading onboarding status")
+    try:
+        return onboard.bootstrap_status(ticker_id)
+    except onboard.OnboardError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/gex0dte/history", operation_id="getGex0dteHistory")
+def get_gex0dte_history(
+    date: str | None = Query(default=None, description="YYYY-MM-DD (CST); omit for today"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Hourly SPY 0DTE net gamma for one trading day, 08:00-16:00 CST.
+
+    All nine hours come back every time; ones never captured read 0 and carry
+    ``captured: false``, so a quiet hour is distinguishable from a flat one.
+    """
+    return gex0dte.history(db, date)
+
+
+@router.get("/gex0dte/history/dates", operation_id="getGex0dteHistoryDates")
+def get_gex0dte_history_dates(db: Session = Depends(get_db)) -> dict:
+    """Dates with at least one captured hour, newest first."""
+    return {"dates": gex0dte.history_dates(db)}
 
 
 @router.get("/earnings", operation_id="getEarnings")

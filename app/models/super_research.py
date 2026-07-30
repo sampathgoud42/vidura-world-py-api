@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Index, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -55,3 +55,33 @@ class DailySnapshot(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict)
     source_file: Mapped[str | None] = mapped_column(String(512), nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Gex0dteHour(Base):
+    """One SPY 0DTE net-gamma reading per CST trading hour.
+
+    The desk reads the day as a chain (+500M >> +420M >> ...), so history is
+    kept per (date, hour) rather than per push, and the last reading inside an
+    hour wins — it is the one closest to that hour's close. Hours never
+    captured have no row at all, and the API renders them as 0, so a gap in
+    the day stays visible instead of silently collapsing.
+    """
+
+    __tablename__ = "gex0dte_hourly"
+    __table_args__ = (
+        Index("ix_gex0dte_hourly_date_hour", "trade_date", "hour_cst", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    trade_date: Mapped[str] = mapped_column(String(10))   # YYYY-MM-DD, CST
+    hour_cst: Mapped[int] = mapped_column(Integer)        # 8..16
+    ticker: Mapped[str] = mapped_column(String(12), default="SPY")
+    net_gex: Mapped[float] = mapped_column(Float, default=0.0)
+    call_gex: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_gex: Mapped[float | None] = mapped_column(Float, nullable=True)
+    spot: Mapped[float | None] = mapped_column(Float, nullable=True)
+    regime: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    flip: Mapped[float | None] = mapped_column(Float, nullable=True)
+    call_wall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    put_wall: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

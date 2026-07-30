@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -205,3 +206,121 @@ def summary_line(ticker, regime, net_gex, flip, call_wall, put_wall, hi, lo) -> 
     if hi is not None and lo is not None:
         parts.append(f"magnets {hi:g}-{lo:g}")
     return " · ".join(parts)
+
+
+# --- hourly history ---------------------------------------------------------
+#
+# The desk wants the day at a glance: +500M >> +420M >> ... one reading per
+# CST trading hour, 08:00 through 16:00. Snapshots arrive whenever a getgamma
+# tab pushes, so this buckets them by hour rather than storing every push.
+
+TRADING_HOURS = tuple(range(8, 17))          # 08:00 .. 16:00 CST inclusive
+CST = ZoneInfo("America/Chicago")
+
+
+def fmt_signed(value: float | None) -> str:
+    """+500M / -420M / 0 — the hourly chain's shorthand.
+
+    Always carries an explicit sign, because the whole point of the chain is
+    reading the flip from positive to negative gamma at a glance.
+    """
+    if not value:
+        return "0"
+    sign = "-" if value < 0 else "+"
+    n = abs(float(value))
+    for cut, suffix in ((1e12, "T"), (1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if n >= cut:
+            return f"{sign}{n / cut:.0f}{suffix}" if n / cut >= 100 else f"{sign}{n / cut:.1f}{suffix}"
+    return f"{sign}{n:.0f}"
+
+
+def record_hour(db, view: dict) -> None:
+    """File ``view`` under its CST trading hour, replacing that hour's row.
+
+    Last write wins inside the hour: a push at 09:58 summarises the 09:00 hour
+    better than one at 09:02. Readings outside 08-16 CST are dropped rather
+    than folded into an edge bucket, which would misreport the open or close.
+    """
+    from app.models import Gex0dteHour
+
+    now = datetime.now(CST)
+    if now.hour not in TRADING_HOURS:
+        return
+    date, hour = now.strftime("%Y-%m-%d"), now.hour
+
+    row = (
+        db.query(Gex0dteHour)
+        .filter(Gex0dteHour.trade_date == date, Gex0dteHour.hour_cst == hour)
+        .one_or_none()
+    )
+    if row is None:
+        row = Gex0dteHour(trade_date=date, hour_cst=hour)
+        db.add(row)
+    row.ticker = view.get("ticker") or "SPY"
+    row.net_gex = float(view.get("net_gex") or 0)
+    row.call_gex = view.get("call_gex")
+    row.put_gex = view.get("put_gex")
+    row.spot = view.get("spot")
+    row.regime = view.get("regime")
+    row.flip = view.get("flip")
+    row.call_wall = view.get("call_wall")
+    row.put_wall = view.get("put_wall")
+    row.fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+
+
+def history(db, trade_date: str | None = None) -> dict:
+    """One trading day as a chain of hourly net-gamma readings, 08:00-16:00 CST.
+
+    Every hour is returned whether or not it was captured — an uncaptured hour
+    reads 0 and is flagged ``captured: false``, so the UI can show the shape of
+    the day honestly rather than pretending the gaps are data.
+    """
+    from app.models import Gex0dteHour
+
+    date = trade_date or datetime.now(CST).strftime("%Y-%m-%d")
+    rows = {
+        r.hour_cst: r
+        for r in db.query(Gex0dteHour).filter(Gex0dteHour.trade_date == date).all()
+    }
+    hours = []
+    for h in TRADING_HOURS:
+        r = rows.get(h)
+        net = float(r.net_gex) if r is not None else 0.0
+        hours.append(
+            {
+                "hour_cst": h,
+                "label": f"{h if h <= 12 else h - 12}{'AM' if h < 12 else 'PM'} CST",
+                "short": f"{h if h <= 12 else h - 12}{'a' if h < 12 else 'p'}",
+                "net_gex": net,
+                "text": fmt_signed(net),
+                "sign": "pos" if net > 0 else ("neg" if net < 0 else "flat"),
+                "captured": r is not None,
+                "spot": r.spot if r is not None else None,
+                "regime": r.regime if r is not None else None,
+                "flip": r.flip if r is not None else None,
+                "call_wall": r.call_wall if r is not None else None,
+                "put_wall": r.put_wall if r is not None else None,
+            }
+        )
+    return {
+        "date": date,
+        "ticker": next((r.ticker for r in rows.values() if r.ticker), "SPY"),
+        "hours": hours,
+        "captured": sum(1 for h in hours if h["captured"]),
+        "chain": " >> ".join(h["text"] for h in hours),
+    }
+
+
+def history_dates(db, limit: int = 60) -> list[str]:
+    """Dates holding at least one captured hour, newest first."""
+    from app.models import Gex0dteHour
+
+    rows = (
+        db.query(Gex0dteHour.trade_date)
+        .distinct()
+        .order_by(Gex0dteHour.trade_date.desc())
+        .limit(limit)
+        .all()
+    )
+    return [r[0] for r in rows]
