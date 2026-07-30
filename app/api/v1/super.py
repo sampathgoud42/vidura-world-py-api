@@ -15,12 +15,14 @@ import sys
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.api.cloud import require_local_runtime
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.services import earnings as earnings_svc
+from app.services import gex0dte
 from app.schemas.super import (
     SnapshotOut,
     SuperConfigUpdate,
@@ -121,6 +123,47 @@ def get_econ(db: Session = Depends(get_db)) -> dict:
     if econ is None:
         raise HTTPException(status_code=404, detail="no econ snapshot in the database yet")
     return econ
+
+
+@router.get("/gex0dte", operation_id="getGex0dte")
+def get_gex0dte(db: Session = Depends(get_db)) -> dict:
+    """Latest stored SPY 0DTE dealer-gamma view, with its own timestamp.
+
+    Read-only and cheap: the desk polls this every 5 minutes and it never
+    touches the vendor. Refreshing is an explicit POST.
+    """
+    payload = svc.latest_payload(db, "gex0dte")
+    if payload is None:
+        raise HTTPException(
+            status_code=404,
+            detail="no 0DTE snapshot yet — press Update 0DTE to fetch one",
+        )
+    return payload
+
+
+class Gex0dteRefresh(BaseModel):
+    """Give it a chain captured from a getgamma.io tab, or nothing to make the
+    server try the vendor directly. No credentials either way — the endpoint
+    needs none; its edge simply refuses non-browser clients."""
+
+    payload: dict | None = None
+    ticker: str = "SPY"
+
+
+@router.post("/gex0dte/refresh", operation_id="refreshGex0dte")
+def refresh_gex0dte(body: Gex0dteRefresh, db: Session = Depends(get_db)) -> dict:
+    raw = body.payload
+    if raw is None:
+        try:
+            raw = gex0dte.fetch_live(ticker=body.ticker)
+        except gex0dte.GammaError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+    try:
+        view = gex0dte.compute(raw)
+    except gex0dte.GammaError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    svc.store_payload(db, "gex0dte", view, source="getgamma.io")
+    return view
 
 
 @router.get("/earnings", operation_id="getEarnings")

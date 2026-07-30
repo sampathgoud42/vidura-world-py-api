@@ -848,6 +848,26 @@ def latest_payload(db: Session, kind: str) -> dict | None:
     return row.payload if row else None
 
 
+def store_payload(db: Session, kind: str, payload: dict, *, source: str | None = None) -> None:
+    """Upsert today's snapshot for ``kind`` (one row per kind+date)."""
+    from datetime import datetime as _dt
+
+    date = _dt.now(_CST).strftime("%Y-%m-%d")
+    row = db.scalar(
+        select(DailySnapshot).where(
+            DailySnapshot.kind == kind, DailySnapshot.snapshot_date == date
+        )
+    )
+    if row is None:
+        db.add(DailySnapshot(kind=kind, snapshot_date=date, payload=payload,
+                             source_file=source))
+    else:
+        row.payload = payload
+        row.source_file = source
+        row.fetched_at = _dt.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+
+
 def sync_everything(db: Session, *, include_archive: bool = True, force: bool = True) -> dict:
     """One pass over every signal source: central ledgers, worker CSVs,
     gex/econ snapshots, config mirrors. Callers must hold no session-level
