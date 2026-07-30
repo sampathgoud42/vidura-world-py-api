@@ -353,6 +353,53 @@ def _stamp_regenerate(db: Session, launched: dict) -> None:
     db.commit()
 
 
+def regenerate_status(db: Session) -> dict:
+    """Whether the last regenerate has finished, so a caller can wait on it.
+
+    ``regenerate_engines`` launches one DETACHED supervisor per category and
+    returns immediately, so "it was launched" is all the API knew. This checks
+    the recorded PIDs against the live process table.
+
+    Matched on cmdline, not PID alone: a bare PID check would call a recycled
+    PID "still regenerating" forever, or — worse — call an unrelated process
+    our own job and report success once IT exits.
+    """
+    row = db.scalar(
+        select(DailySnapshot)
+        .where(DailySnapshot.kind == "regen")
+        .order_by(DailySnapshot.fetched_at.desc())
+        .limit(1)
+    )
+    if row is None or not (row.payload or {}).get("launched"):
+        return {"launched_at": None, "running": [], "finished": [], "done": True}
+
+    launched: dict = row.payload["launched"]
+    running, finished = [], []
+    try:
+        import psutil
+    except ImportError:          # cloud image has no psutil; cannot observe
+        return {"launched_at": row.payload.get("at"), "running": [],
+                "finished": list(launched), "done": True, "observable": False}
+
+    for cat, pid in launched.items():
+        alive = False
+        try:
+            proc = psutil.Process(int(pid))
+            cmd = " ".join(proc.cmdline())
+            alive = "super_signal_bot.py" in cmd and f"--category {cat}" in cmd
+        except (psutil.Error, ValueError, TypeError):
+            alive = False
+        (running if alive else finished).append(cat)
+
+    return {
+        "launched_at": row.payload.get("at"),
+        "running": running,
+        "finished": finished,
+        "done": not running,
+        "observable": True,
+    }
+
+
 def regenerate_engines(
     categories: list[str] | None = None, *, db: Session | None = None, force: bool = False
 ) -> dict:

@@ -210,6 +210,46 @@ def set_engine_pct(payload: EnginePctUpdate, db: Session = Depends(get_db)) -> d
         raise HTTPException(status_code=500, detail=f"config write failed: {exc}") from exc
 
 
+@router.get("/engine-gates", operation_id="getEngineGates")
+def get_engine_gates() -> dict:
+    """A-book / B-book tp-before-sl admission gates (desk-wide).
+
+    These are module-level constants in engine_common.py shared by every
+    ticker, so there is one pair of numbers, not one per category.
+    """
+    require_local_runtime("Reading the engine gates")
+    try:
+        return engine_pct.read_gates()
+    except engine_pct.PctError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+class EngineGatesUpdate(BaseModel):
+    """``b_tpsl`` is the floor to emit at all; ``a_tpsl`` promotes to A-book."""
+
+    a_tpsl: float
+    b_tpsl: float
+
+
+@router.post("/engine-gates", operation_id="setEngineGates")
+def set_engine_gates(payload: EngineGatesUpdate) -> dict:
+    """Set the A/B admission gates. Applies on the next scan; no re-scoring."""
+    require_local_runtime("Changing the engine gates")
+    try:
+        return engine_pct.write_gates(payload.a_tpsl, payload.b_tpsl)
+    except engine_pct.PctError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"write failed: {exc}") from exc
+
+
+@router.get("/regenerate/status", operation_id="getRegenerateStatus")
+def regenerate_status(db: Session = Depends(get_db)) -> dict:
+    """Whether the last regenerate has finished — the launch itself is detached."""
+    require_local_runtime("Reading regenerate status")
+    return svc.regenerate_status(db)
+
+
 class HeartbeatIn(BaseModel):
     """One push cycle reported by the browser pusher, successful or not."""
 

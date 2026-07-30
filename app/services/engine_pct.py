@@ -167,6 +167,92 @@ def write_category(db: Session, category: str, tp_pct: float,
     }
 
 
+# --- A/B admission gates ---------------------------------------------------
+#
+# These decide whether a scored config produces a signal at all, and which
+# book it lands in. Unlike TP/SL they are module-level globals in
+# engine_common.py — ONE pair of numbers shared by every ticker in every
+# category — so they are read and written desk-wide rather than per category.
+# Presenting them per-category would imply an independence the engine does
+# not have.
+
+_GATES = {
+    "b_tpsl": (
+        re.compile(r"^MIN_TPSL\s*=\s*[0-9.]+.*$", re.MULTILINE),
+        re.compile(r"^MIN_TPSL\s*=\s*([0-9.]+)", re.MULTILINE),
+        "MIN_TPSL = {v:<19}# tp-before-sl % a config needs to stay live",
+    ),
+    "a_tpsl": (
+        re.compile(r"^A_TPSL\s*=\s*[0-9.]+.*$", re.MULTILINE),
+        re.compile(r"^A_TPSL\s*=\s*([0-9.]+)", re.MULTILINE),
+        "A_TPSL = {v:<21}# tp-before-sl > this = A-book on that pair",
+    ),
+}
+
+
+def _engine_common() -> Path:
+    return (Path(get_settings().super_dir) / "engine_common.py").resolve()
+
+
+def read_gates() -> dict:
+    """The desk-wide A-book / B-book admission thresholds."""
+    path = _engine_common()
+    if not path.is_file():
+        raise PctError(f"engine_common.py not found at {path}")
+    text = path.read_text(encoding="utf-8")
+    out = {}
+    for key, (_sub, rx, _fmt) in _GATES.items():
+        m = rx.search(text)
+        if m is None:
+            raise PctError(f"engine_common.py has no {key.upper()} assignment")
+        out[key] = float(m.group(1))
+    out["scope"] = "all categories"
+    return out
+
+
+def write_gates(a_tpsl: float, b_tpsl: float) -> dict:
+    """Set the A-book and B-book tp-before-sl floors.
+
+    ``b_tpsl`` is the floor to stay live at all; ``a_tpsl`` promotes to
+    A-book. A below B is rejected rather than clamped: it would make every
+    live config an A-book signal, which is not a stricter setting than the
+    user asked for but a silently much looser one.
+    """
+    for name, value in (("A", a_tpsl), ("B", b_tpsl)):
+        if not isinstance(value, (int, float)) or not (50.0 <= float(value) <= 100.0):
+            raise PctError(f"{name} gate {value} is outside 50–100%")
+    a_tpsl, b_tpsl = round(float(a_tpsl), 2), round(float(b_tpsl), 2)
+    if a_tpsl < b_tpsl:
+        raise PctError(
+            f"A gate {a_tpsl}% is below the B floor {b_tpsl}% — that would make every "
+            "live signal an A-book signal"
+        )
+
+    path = _engine_common()
+    text = original = path.read_text(encoding="utf-8")
+    for key, value in (("a_tpsl", a_tpsl), ("b_tpsl", b_tpsl)):
+        sub, _rx, fmt = _GATES[key]
+        # one decimal, matching the file's own style: %g would write 88
+        # where the module had 85.0, quietly changing a float literal to an int
+        text = sub.sub(fmt.format(v=f"{value:.1f}"), text, count=1)
+    if text == original:
+        raise PctError("no A_TPSL/MIN_TPSL assignment matched — engine_common.py changed shape")
+    path.write_text(text, encoding="utf-8")
+
+    logger.info("engine gates -> A %s / B %s", a_tpsl, b_tpsl)
+    return {
+        "a_tpsl": a_tpsl,
+        "b_tpsl": b_tpsl,
+        # unlike TP/SL this needs no re-scoring: the gates are applied to the
+        # cached scores every scan, they are not baked into them
+        "note": (
+            "Applied on the next scan. These gates filter the already-computed engine "
+            "scores, so nothing has to be re-scored — but a regenerate re-emits today's "
+            "signals under the new gates instead of waiting for the next bar."
+        ),
+    }
+
+
 def _retarget_rules(cat: dict, tp_pct: float, sl_pct: float) -> None:
     """Keep the human-readable rules line honest about the new numbers."""
     tp_rx = re.compile(r"TP ±[0-9.]+%")
