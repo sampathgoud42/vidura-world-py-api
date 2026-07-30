@@ -31,6 +31,9 @@ class TradeCreate(BaseModel):
     pnl_usd: float | None = None
     status: str = "open"
     is_mock: bool = True
+    # True = real money, False = paper, None = unknown (btc15 v2/v3/v4 write
+    # both modes to one CSV with no distinguishing field).
+    is_live: bool | None = None
     opened_at: datetime | None = None
     closed_at: datetime | None = None
     raw: dict | None = None

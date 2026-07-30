@@ -15,6 +15,10 @@ SETTLED_STATUSES = WIN_STATUSES | LOSS_STATUSES | {"settled", "closed"}
 
 def record_trade(db: Session, user_id: str, payload: TradeCreate) -> Trade:
     data = payload.model_dump(exclude_none=True)
+    # A manually recorded trade always states its mock flag, so its mode is
+    # known — derive is_live from it rather than leaving it NULL, which the
+    # ledger would read as "unknown" and hide from the default LIVE view.
+    data.setdefault("is_live", not data.get("is_mock", True))
     trade = Trade(user_id=user_id, **data)
     db.add(trade)
     db.commit()
@@ -30,10 +34,18 @@ def query_trades(
     bot_version: str | None = None,
     status: str | None = None,
     days: int | None = None,
+    mode: str = "all",
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[int, list[Trade]]:
+    """``mode``: 'live' = real money only, 'paper' = simulated only, 'all' =
+    everything. Rows whose mode is unknown (is_live NULL) appear only under
+    'all', so a live-only ledger never quietly includes an unverified trade."""
     stmt = select(Trade)
+    if mode == "live":
+        stmt = stmt.where(Trade.is_live.is_(True))
+    elif mode == "paper":
+        stmt = stmt.where(Trade.is_live.is_(False))
     if user_id:
         stmt = stmt.where(Trade.user_id == user_id)
     if isinstance(bot_key, list):

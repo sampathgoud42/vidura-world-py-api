@@ -82,11 +82,17 @@ def test_btc_trades_endpoint(client, user):
     client.post(f"/api/v1/users/{uid}/trades", json=_mock_trade(bot_key="btc15"))
     client.post(f"/api/v1/users/{uid}/trades", json=_mock_trade(bot_key="btc60"))
 
+    # the ledger defaults to LIVE only, and _mock_trade is paper
     resp = client.get("/api/v1/bots/btc/trades", params={"user_id": uid})
     assert resp.status_code == 200
+    assert resp.json()["total"] == 0
+
+    resp = client.get("/api/v1/bots/btc/trades", params={"user_id": uid, "mode": "all"})
     assert resp.json()["total"] == 2
 
-    resp = client.get("/api/v1/bots/btc/trades", params={"user_id": uid, "bot": "btc60"})
+    resp = client.get(
+        "/api/v1/bots/btc/trades", params={"user_id": uid, "bot": "btc60", "mode": "all"}
+    )
     assert resp.json()["total"] == 1
 
 

@@ -41,6 +41,10 @@ class Trade(Base):
     status: Mapped[str] = mapped_column(String(16), default="open")
     # open | won | lost | settled | closed | canceled
     is_mock: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Real money or not. NULL = unknown: btc15 v2/v3/v4 write paper and live
+    # rows to one CSV with no distinguishing field, and calling those "paper"
+    # would hide real trades from the ledger's default LIVE view.
+    is_live: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     raw: Mapped[dict | None] = mapped_column(JSON, nullable=True)

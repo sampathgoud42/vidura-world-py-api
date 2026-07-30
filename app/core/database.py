@@ -81,3 +81,20 @@ def _migrate(bind) -> None:
                     "ADD COLUMN archived BOOLEAN NOT NULL DEFAULT 0"
                 )
             )
+
+        # trades.is_live: real money or not, for the ledger's LIVE column.
+        # NULLABLE on purpose — btc15 v2/v3/v4 write paper and live rows to the
+        # same CSV with no distinguishing field, so their mode is genuinely
+        # unknown. Backfill from is_mock everywhere it IS known, and leave
+        # those rows NULL rather than mislabelling real trades as paper.
+        tcols = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(trades)")).fetchall()
+        }
+        if tcols and "is_live" not in tcols:
+            conn.execute(text("ALTER TABLE trades ADD COLUMN is_live BOOLEAN"))
+            conn.execute(
+                text(
+                    "UPDATE trades SET is_live = NOT is_mock "
+                    "WHERE NOT (bot_key = 'btc15' AND bot_version IN ('v2','v3','v4'))"
+                )
+            )

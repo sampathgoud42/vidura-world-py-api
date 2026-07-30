@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from threading import Lock
+from time import monotonic
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -12,6 +14,26 @@ from app.services import credentials as creds_svc
 from app.services.kalshi_client import KalshiApiError, KalshiAuthError, KalshiClient
 
 router = APIRouter(prefix="/users/{user_id}", tags=["kalshi"])
+
+# Portfolio value is signed-request-per-call against Kalshi. The desk polls it
+# every 5 minutes, but several open tabs (or a reload loop) would multiply
+# that, so serve repeats from a short cache.
+_PV_TTL_S = 30.0
+_pv_cache: dict[str, tuple[float, dict]] = {}
+_pv_lock = Lock()
+
+
+def _pv_cache_get(user_id: str) -> dict | None:
+    with _pv_lock:
+        hit = _pv_cache.get(user_id)
+        if hit and monotonic() - hit[0] < _PV_TTL_S:
+            return {**hit[1], "cached": True}
+    return None
+
+
+def _pv_cache_put(user_id: str, payload: dict) -> None:
+    with _pv_lock:
+        _pv_cache[user_id] = (monotonic(), payload)
 
 
 class KalshiClientRequest(BaseModel):
@@ -77,6 +99,42 @@ def get_kalshi_client(
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Kalshi unreachable: {exc}")
     finally:
         client.close()
+
+
+@router.get("/portfolio", operation_id="getPortfolioValue")
+def get_portfolio_value(user: User = Depends(get_user_or_404)) -> dict:
+    """Live portfolio value: settled cash + mark-to-market on open positions.
+
+    Read-only, and the same figure the bots print as [TARGET-PV], so the desk
+    and the bot logs agree. Cached briefly so a polling UI cannot turn into a
+    request per viewer per second against Kalshi.
+    """
+    cached = _pv_cache_get(user.user_id)
+    if cached is not None:
+        return cached
+
+    try:
+        creds = creds_svc.load_kalshi_credentials(user.user_root_folder)
+    except creds_svc.CredentialsError as exc:
+        raise HTTPException(status_code=status.HTTP_424_FAILED_DEPENDENCY, detail=str(exc))
+    try:
+        client = KalshiClient(creds.api_key_id, creds.private_key_path, creds.base_uri)
+    except KalshiAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    try:
+        pv = client.portfolio()
+    except KalshiApiError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=f"Kalshi unreachable: {exc}"
+        )
+    finally:
+        client.close()
+
+    out = {**pv, "fetched_at": datetime.now(timezone.utc).isoformat(), "cached": False}
+    _pv_cache_put(user.user_id, out)
+    return out
 
 
 class PasswordCheck(BaseModel):

@@ -97,8 +97,12 @@ def _map_btc15_v2(row: dict, version: str) -> dict | None:
         "pnl_usd": pnl,
         "status": status,
         # The CSV 'mode' column records the entry style (BUY/FLIP-BUY), not
-        # paper-vs-live, so we cannot infer live trades from it.
+        # paper-vs-live, and BOT_CSV_PATH is the same file either way, so
+        # the mode is genuinely UNKNOWN here. is_live stays None rather
+        # than claiming paper, which would hide real trades from the
+        # ledger's default LIVE view.
         "is_mock": True,
+        "is_live": None,
         "opened_at": opened,
         "closed_at": opened,
         "raw": _clean_raw(row),
@@ -122,6 +126,7 @@ def _map_btc15_v5(row: dict) -> dict | None:
         "price_cents": _f(row.get("price_cents")),
         "status": "closed" if action == "sell" else "open",
         "is_mock": (row.get("dry_run") or "").strip().upper() in ("TRUE", "1", "YES"),
+        "is_live": (row.get("dry_run") or "").strip().upper() not in ("TRUE", "1", "YES"),
         "opened_at": opened,
         "raw": _clean_raw(row),
     }
@@ -155,6 +160,7 @@ def _map_btc60(row: dict, version: str, *, is_paper: bool) -> dict | None:
         "pnl_usd": pnl,
         "status": status,
         "is_mock": is_paper,
+        "is_live": not is_paper,
         "opened_at": opened,
         "closed_at": opened,
         "raw": _clean_raw(row),
@@ -207,6 +213,7 @@ def _map_sports(row: dict, *, is_paper: bool, source: str) -> dict | None:
         "pnl_usd": pnl,
         "status": status,
         "is_mock": is_paper,
+        "is_live": not is_paper,
         "opened_at": opened,
         "closed_at": closed,
         "raw": _clean_raw(row),

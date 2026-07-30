@@ -122,6 +122,24 @@ class KalshiClient:
     def balance_cents(self) -> int:
         return int(self.request("GET", "/portfolio/balance").get("balance", 0))
 
+    def portfolio(self) -> dict[str, float]:
+        """Cash, open-position market value, and their total, in dollars.
+
+        Same definition the bots use for [TARGET-PV] (see bot_kalshi_main
+        ``_portfolio_value``): Kalshi's /portfolio/balance returns settled cash
+        as ``balance`` and the mark-to-market value of open positions as
+        ``portfolio_value``, both in CENTS. Total = the two summed, so this
+        moves with open positions rather than only on settlement.
+        """
+        d = self.request("GET", "/portfolio/balance")
+        cash = float(d.get("balance", 0)) / 100.0
+        positions = float(d.get("portfolio_value", 0)) / 100.0
+        return {
+            "cash_usd": round(cash, 2),
+            "positions_usd": round(positions, 2),
+            "total_usd": round(cash + positions, 2),
+        }
+
     def exchange_status(self) -> dict[str, Any]:
         return self.request("GET", "/exchange/status")
 

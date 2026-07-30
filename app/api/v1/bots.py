@@ -233,6 +233,8 @@ def btc_trades(
     user_id: str | None = Query(default=None),
     bot: str | None = Query(default=None, description="filter: btc15 or btc60"),
     days: int | None = Query(default=None, ge=1, le=3660),
+    mode: str = Query(default="live", pattern="^(live|paper|all)$",
+                      description="live = real money only (default), paper, or all"),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -240,7 +242,8 @@ def btc_trades(
     keys = [_btc_key(bot)] if bot else list(BTC_KEYS)
     _refresh_mirror(db, user_id, keys)
     total, items = trades_svc.query_trades(
-        db, user_id=user_id, bot_key=keys, days=days, limit=limit, offset=offset
+        db, user_id=user_id, bot_key=keys, days=days, mode=mode,
+        limit=limit, offset=offset
     )
     return TradeHistoryPage(total=total, items=[TradeOut.model_validate(t) for t in items])
 
@@ -329,13 +332,16 @@ def sports_performance(
 def sports_trades(
     user_id: str | None = Query(default=None),
     days: int | None = Query(default=None, ge=1, le=3660),
+    mode: str = Query(default="live", pattern="^(live|paper|all)$",
+                      description="live = real money only (default), paper, or all"),
     limit: int = Query(default=100, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ) -> TradeHistoryPage:
     _refresh_mirror(db, user_id, ["sports"])
     total, items = trades_svc.query_trades(
-        db, user_id=user_id, bot_key="sports", days=days, limit=limit, offset=offset
+        db, user_id=user_id, bot_key="sports", days=days, mode=mode,
+        limit=limit, offset=offset
     )
     return TradeHistoryPage(total=total, items=[TradeOut.model_validate(t) for t in items])
 
