@@ -344,6 +344,10 @@ _CSV_COLS = [
     "mode", "direction", "actual_direction_previous", "contracts",
     "entry_price", "exit_price", "pnl", "result", "portfolio_value", "returns",
     "MAX_LOSS_PCT", "MAX_PROFIT_PCT", "ENTRY_SIGNAL",
+    # paper-vs-live, recorded per row. Without it the ledger could not tell
+    # real money from a dry run: the 'mode' column above is the ENTRY STYLE
+    # (BUY/FLIP-BUY), and both modes write to the same CSV.
+    "dry_run",
 ]
 
 
@@ -479,6 +483,7 @@ def log_trade(
             round(entry, 4), round(exit_, 4), round(pnl, 4), result, round(pv, 2),
             returns_str,
             _fmt(max_loss_pct), _fmt(max_profit_pct), signal_source or "",
+            "TRUE" if DRY_RUN else "FALSE",
         ])
     # Single funnel for realized P&L, so this bot's own bankroll ledger moves
     # exactly once per recorded trade.

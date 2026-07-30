@@ -115,6 +115,59 @@ def _fix_india_signal_times(conn) -> int:
     return fixed
 
 
+def _backfill_btc15_modes(conn) -> int:
+    """Classify unknown-mode btc15 trades from the run that produced them.
+
+    A trade opened inside a run's [started_at, stopped_at] window was made by
+    that run, and the run recorded whether it was paper or live. Only fills
+        is_live IS NULL
+    so a value the bot itself recorded is never overwritten, and rows with no
+    matching run stay unknown rather than being guessed at.
+    """
+    from sqlalchemy import text
+
+    rows = conn.execute(
+        text(
+            "SELECT id, user_id, opened_at FROM trades "
+            "WHERE bot_key = 'btc15' AND is_live IS NULL AND opened_at IS NOT NULL"
+        )
+    ).fetchall()
+    if not rows:
+        return 0
+
+    runs = conn.execute(
+        text(
+            "SELECT user_id, mode, started_at, stopped_at FROM bot_runs "
+            "WHERE bot_key = 'btc15' AND started_at IS NOT NULL"
+        )
+    ).fetchall()
+    if not runs:
+        return 0
+
+    fixed = 0
+    for tid, user_id, opened in rows:
+        for r_user, mode, started, stopped in runs:
+            if r_user != user_id or not mode:
+                continue
+            # open-ended when the run is still going
+            if str(opened) < str(started):
+                continue
+            if stopped and str(opened) > str(stopped):
+                continue
+            conn.execute(
+                text("UPDATE trades SET is_live = :live, is_mock = :mock WHERE id = :id"),
+                {"live": 1 if mode == "live" else 0,
+                 "mock": 0 if mode == "live" else 1, "id": tid},
+            )
+            fixed += 1
+            break
+    if fixed:
+        logging.getLogger("app.migrate").info(
+            "classified %s btc15 trade(s) from their run's recorded mode", fixed
+        )
+    return fixed
+
+
 def _migrate(bind) -> None:
     """Tiny additive migrations — create_all never alters existing tables.
 
@@ -149,6 +202,14 @@ def _migrate(bind) -> None:
         }
         if scols:
             _fix_india_signal_times(conn)
+
+        # btc15 rows written before the CSV carried a dry_run column have an
+        # unknown mode, which hides them from BOTH the LIVE and PAPER ledgers.
+        # The run that produced each one does know, so classify from bot_runs.
+        if "is_live" in {
+            row[1] for row in conn.execute(text("PRAGMA table_info(trades)")).fetchall()
+        }:
+            _backfill_btc15_modes(conn)
 
         # trades.is_live: real money or not, for the ledger's LIVE column.
         # NULLABLE on purpose — btc15 v2/v3/v4 write paper and live rows to the

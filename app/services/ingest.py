@@ -70,6 +70,16 @@ def _read_rows(path: Path) -> list[dict]:
         return []
 
 
+def _dry(row: dict) -> bool | None:
+    """The row's dry_run flag: True=paper, False=live, None=not recorded."""
+    raw = (row.get("dry_run") or "").strip().upper()
+    if raw in ("TRUE", "1", "YES"):
+        return True
+    if raw in ("FALSE", "0", "NO"):
+        return False
+    return None
+
+
 def _clean_raw(row: dict) -> dict:
     return {str(k): (v if isinstance(v, (str, int, float, bool, list)) else str(v)) for k, v in row.items() if k}
 
@@ -96,13 +106,12 @@ def _map_btc15_v2(row: dict, version: str) -> dict | None:
         "price_cents": _f(row.get("entry_price")),
         "pnl_usd": pnl,
         "status": status,
-        # The CSV 'mode' column records the entry style (BUY/FLIP-BUY), not
-        # paper-vs-live, and BOT_CSV_PATH is the same file either way, so
-        # the mode is genuinely UNKNOWN here. is_live stays None rather
-        # than claiming paper, which would hide real trades from the
-        # ledger's default LIVE view.
-        "is_mock": True,
-        "is_live": None,
+        # 'mode' above is the ENTRY STYLE (BUY/FLIP-BUY), never paper-vs-live.
+        # The bot now records dry_run per row; rows written before that column
+        # existed stay None (unknown) and are classified from the run that
+        # produced them by _backfill_btc15_modes().
+        "is_mock": _dry(row) is not False,
+        "is_live": (None if _dry(row) is None else not _dry(row)),
         "opened_at": opened,
         "closed_at": opened,
         "raw": _clean_raw(row),
