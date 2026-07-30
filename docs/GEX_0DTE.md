@@ -67,8 +67,16 @@ is closed or you click it again. Click once after the open; the desk then
 tracks it for the whole session.
 
 ```js
-javascript:(()=>{if(window.__vidPush){clearInterval(window.__vidPush);window.__vidPush=null;alert('Vidura 0DTE auto-push STOPPED');return;}const go=async(loud)=>{try{const r=await fetch('/api/options?ticker=SPY&mode=0dte&strikes=50',{credentials:'include'});const d=await r.json();const p={ticker:d.ticker,spotPrice:d.spotPrice,mode:d.mode,timestamp:d.timestamp,marketStatus:d.marketStatus,marketOpen:d.marketOpen,contracts:d.contracts.map(c=>({contract_type:c.contract_type,strike_price:c.strike_price,open_interest:c.open_interest,greeks:{gamma:c.greeks&&c.greeks.gamma}}))};const q=await fetch('http://localhost:8790/api/v1/super/gex0dte/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload:p})});const v=await q.json();if(loud)alert(q.ok?('Vidura 0DTE auto-push STARTED (every 5 min)\n\n'+v.note):('Push failed: '+(v.detail||q.status)));}catch(e){if(loud)alert('Vidura 0DTE failed: '+e);}};go(true);window.__vidPush=setInterval(()=>go(false),300000);})()
+javascript:(()=>{if(!/(^|\.)getgamma\.io$/.test(location.hostname)){alert('Vidura 0DTE: run this ON the getgamma dashboard tab.\n\nThis tab is '+location.hostname+', where /api/options is not the option chain.');return;}if(window.__vidPush){clearInterval(window.__vidPush);window.__vidPush=null;alert('Vidura 0DTE auto-push STOPPED');return;}const go=async(loud)=>{try{const r=await fetch('/api/options?ticker=SPY&mode=0dte&strikes=50',{credentials:'include'});const ct=r.headers.get('content-type')||'';if(!ct.includes('json')){if(loud)alert('Vidura 0DTE: getgamma answered HTTP '+r.status+' with a page, not the chain. Reload the dashboard tab and click again.');return;}const d=await r.json();const p={ticker:d.ticker,spotPrice:d.spotPrice,mode:d.mode,timestamp:d.timestamp,marketStatus:d.marketStatus,marketOpen:d.marketOpen,contracts:d.contracts.map(c=>({contract_type:c.contract_type,strike_price:c.strike_price,open_interest:c.open_interest,greeks:{gamma:c.greeks&&c.greeks.gamma}}))};const q=await fetch('http://localhost:8790/api/v1/super/gex0dte/refresh',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({payload:p})});const v=await q.json();if(loud)alert(q.ok?('Vidura 0DTE auto-push STARTED (every 5 min)\n\n'+v.note):('Push failed: '+(v.detail||q.status)));}catch(e){if(loud)alert('Vidura 0DTE failed: '+e);}};go(true);window.__vidPush=setInterval(()=>go(false),300000);})()
 ```
+
+Clicking it a second time in the same tab stops the loop.
+
+It runs against whichever tab is FOCUSED, not the getgamma one — so if it
+is clicked while another tab is in front, `/api/options` resolves against
+that site and returns HTML. The hostname check above catches that and says
+which tab it landed on, instead of failing with a JSON parse error.
+
 
 Clicking it a second time stops the loop.
 
