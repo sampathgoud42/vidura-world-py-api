@@ -1,8 +1,8 @@
 {
  "v": 4,
- "scored_on": "2026-07-28",
+ "scored_on": "2026-07-30",
  "fingerprint": "ab7a18be5912c62135f924ae29768ae5",
- "bars_end": "2026-07-28 08:00:00-05:00",
+ "bars_end": "2026-07-30 08:00:00-05:00",
  "scores": {
   "LONG:above_vwap+above_pivot+macd_x_up_neg|nk0.8|vm0.8|full_0845_1400": {
    "5m": {
@@ -129,32 +129,32 @@
    },
    "15m": {
     "30m": {
-     "trades": 3,
+     "trades": 2,
      "wins": 1,
-     "stops": 2,
-     "acc_strict": 33.3,
-     "acc_tpsl": 33.3
+     "stops": 1,
+     "acc_strict": 50.0,
+     "acc_tpsl": 50.0
     },
     "1h": {
-     "trades": 3,
+     "trades": 2,
      "wins": 1,
-     "stops": 2,
-     "acc_strict": 33.3,
-     "acc_tpsl": 33.3
+     "stops": 1,
+     "acc_strict": 50.0,
+     "acc_tpsl": 50.0
     },
     "2h": {
-     "trades": 3,
+     "trades": 2,
      "wins": 1,
-     "stops": 2,
-     "acc_strict": 33.3,
-     "acc_tpsl": 33.3
+     "stops": 1,
+     "acc_strict": 50.0,
+     "acc_tpsl": 50.0
     },
     "4h": {
-     "trades": 3,
+     "trades": 2,
      "wins": 1,
-     "stops": 2,
-     "acc_strict": 33.3,
-     "acc_tpsl": 33.3
+     "stops": 1,
+     "acc_strict": 50.0,
+     "acc_tpsl": 50.0
     }
    },
    "30m": {
@@ -191,32 +191,32 @@
   "LONG:macd_x_up_neg+hist_turn_up|nk0.0|vm0.8|full_0845_1400": {
    "5m": {
     "30m": {
-     "trades": 4,
+     "trades": 5,
      "wins": 3,
-     "stops": 1,
-     "acc_strict": 75.0,
-     "acc_tpsl": 75.0
+     "stops": 2,
+     "acc_strict": 60.0,
+     "acc_tpsl": 60.0
     },
     "1h": {
-     "trades": 4,
+     "trades": 5,
      "wins": 3,
-     "stops": 1,
-     "acc_strict": 75.0,
-     "acc_tpsl": 75.0
+     "stops": 2,
+     "acc_strict": 60.0,
+     "acc_tpsl": 60.0
     },
     "2h": {
-     "trades": 4,
+     "trades": 5,
      "wins": 3,
-     "stops": 1,
-     "acc_strict": 75.0,
-     "acc_tpsl": 75.0
+     "stops": 2,
+     "acc_strict": 60.0,
+     "acc_tpsl": 60.0
     },
     "4h": {
-     "trades": 4,
+     "trades": 5,
      "wins": 3,
-     "stops": 1,
-     "acc_strict": 75.0,
-     "acc_tpsl": 75.0
+     "stops": 2,
+     "acc_strict": 60.0,
+     "acc_tpsl": 60.0
     }
    },
    "15m": {
@@ -405,60 +405,60 @@
    },
    "15m": {
     "30m": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "1h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "2h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "4h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     }
    },
    "30m": {
     "30m": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "1h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "2h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "4h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     }
@@ -1111,92 +1111,92 @@
   "LONG:delta_surge+macd_x_up_neg|nk0.8|vm0.8|full_0845_1400": {
    "5m": {
     "30m": {
-     "trades": 10,
+     "trades": 11,
      "wins": 7,
-     "stops": 3,
-     "acc_strict": 70.0,
-     "acc_tpsl": 70.0
+     "stops": 4,
+     "acc_strict": 63.6,
+     "acc_tpsl": 63.6
     },
     "1h": {
-     "trades": 10,
+     "trades": 11,
      "wins": 7,
-     "stops": 3,
-     "acc_strict": 70.0,
-     "acc_tpsl": 70.0
+     "stops": 4,
+     "acc_strict": 63.6,
+     "acc_tpsl": 63.6
     },
     "2h": {
-     "trades": 10,
+     "trades": 11,
      "wins": 7,
-     "stops": 3,
-     "acc_strict": 70.0,
-     "acc_tpsl": 70.0
+     "stops": 4,
+     "acc_strict": 63.6,
+     "acc_tpsl": 63.6
     },
     "4h": {
-     "trades": 10,
+     "trades": 11,
      "wins": 7,
-     "stops": 3,
-     "acc_strict": 70.0,
-     "acc_tpsl": 70.0
+     "stops": 4,
+     "acc_strict": 63.6,
+     "acc_tpsl": 63.6
     }
    },
    "15m": {
     "30m": {
-     "trades": 8,
+     "trades": 9,
      "wins": 5,
-     "stops": 3,
-     "acc_strict": 62.5,
-     "acc_tpsl": 62.5
+     "stops": 4,
+     "acc_strict": 55.6,
+     "acc_tpsl": 55.6
     },
     "1h": {
-     "trades": 8,
+     "trades": 9,
      "wins": 5,
-     "stops": 3,
-     "acc_strict": 62.5,
-     "acc_tpsl": 62.5
+     "stops": 4,
+     "acc_strict": 55.6,
+     "acc_tpsl": 55.6
     },
     "2h": {
-     "trades": 8,
+     "trades": 9,
      "wins": 5,
-     "stops": 3,
-     "acc_strict": 62.5,
-     "acc_tpsl": 62.5
+     "stops": 4,
+     "acc_strict": 55.6,
+     "acc_tpsl": 55.6
     },
     "4h": {
-     "trades": 8,
+     "trades": 9,
      "wins": 5,
-     "stops": 3,
-     "acc_strict": 62.5,
-     "acc_tpsl": 62.5
+     "stops": 4,
+     "acc_strict": 55.6,
+     "acc_tpsl": 55.6
     }
    },
    "30m": {
     "30m": {
-     "trades": 4,
+     "trades": 6,
      "wins": 2,
-     "stops": 2,
-     "acc_strict": 50.0,
-     "acc_tpsl": 50.0
+     "stops": 4,
+     "acc_strict": 33.3,
+     "acc_tpsl": 33.3
     },
     "1h": {
-     "trades": 4,
+     "trades": 6,
      "wins": 2,
-     "stops": 2,
-     "acc_strict": 50.0,
-     "acc_tpsl": 50.0
+     "stops": 4,
+     "acc_strict": 33.3,
+     "acc_tpsl": 33.3
     },
     "2h": {
-     "trades": 4,
+     "trades": 6,
      "wins": 2,
-     "stops": 2,
-     "acc_strict": 50.0,
-     "acc_tpsl": 50.0
+     "stops": 4,
+     "acc_strict": 33.3,
+     "acc_tpsl": 33.3
     },
     "4h": {
-     "trades": 4,
+     "trades": 6,
      "wins": 2,
-     "stops": 2,
-     "acc_strict": 50.0,
-     "acc_tpsl": 50.0
+     "stops": 4,
+     "acc_strict": 33.3,
+     "acc_tpsl": 33.3
     }
    }
   },

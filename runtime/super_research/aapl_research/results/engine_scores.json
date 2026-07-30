@@ -1,38 +1,38 @@
 {
  "v": 4,
- "scored_on": "2026-07-28",
+ "scored_on": "2026-07-30",
  "fingerprint": "1d05fe142e017f8997f445ed73ae08d6",
- "bars_end": "2026-07-28 08:00:53-05:00",
+ "bars_end": "2026-07-30 08:00:03-05:00",
  "scores": {
   "LONG:above_pivot+hist_turn_up+rvol_thrust_up|nk0.0|vm0.8|am_0845_1130": {
    "5m": {
     "30m": {
-     "trades": 8,
-     "wins": 7,
+     "trades": 7,
+     "wins": 6,
      "stops": 0,
-     "acc_strict": 87.5,
+     "acc_strict": 85.7,
      "acc_tpsl": 100.0
     },
     "1h": {
-     "trades": 8,
-     "wins": 7,
+     "trades": 7,
+     "wins": 6,
      "stops": 0,
-     "acc_strict": 87.5,
+     "acc_strict": 85.7,
      "acc_tpsl": 100.0
     },
     "2h": {
-     "trades": 8,
-     "wins": 7,
+     "trades": 7,
+     "wins": 6,
      "stops": 1,
-     "acc_strict": 87.5,
-     "acc_tpsl": 87.5
+     "acc_strict": 85.7,
+     "acc_tpsl": 85.7
     },
     "4h": {
-     "trades": 8,
-     "wins": 7,
+     "trades": 7,
+     "wins": 6,
      "stops": 1,
-     "acc_strict": 87.5,
-     "acc_tpsl": 87.5
+     "acc_strict": 85.7,
+     "acc_tpsl": 85.7
     }
    },
    "15m": {
@@ -99,32 +99,32 @@
   "LONG:yhigh_break+hist_turn_up+strong_close|nk0.0|vm0.8|pm_1130_1400": {
    "5m": {
     "30m": {
-     "trades": 7,
+     "trades": 9,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "1h": {
-     "trades": 7,
+     "trades": 9,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "2h": {
-     "trades": 7,
+     "trades": 9,
      "wins": 1,
-     "stops": 0,
-     "acc_strict": 14.3,
-     "acc_tpsl": 100.0
+     "stops": 2,
+     "acc_strict": 11.1,
+     "acc_tpsl": 33.3
     },
     "4h": {
-     "trades": 7,
+     "trades": 9,
      "wins": 2,
-     "stops": 0,
-     "acc_strict": 28.6,
-     "acc_tpsl": 100.0
+     "stops": 2,
+     "acc_strict": 22.2,
+     "acc_tpsl": 50.0
     }
    },
    "15m": {
@@ -159,30 +159,30 @@
    },
    "30m": {
     "30m": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
      "stops": 0,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "1h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "2h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "4h": {
-     "trades": 0,
+     "trades": 1,
      "wins": 0,
-     "stops": 0,
+     "stops": 1,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     }
@@ -467,32 +467,32 @@
   "LONG:yhigh_break+hist_turn_up|nk0.8|vm0.8|mid_1030_1300": {
    "5m": {
     "30m": {
-     "trades": 5,
+     "trades": 6,
      "wins": 0,
      "stops": 0,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "1h": {
-     "trades": 5,
+     "trades": 6,
      "wins": 0,
      "stops": 0,
      "acc_strict": 0.0,
      "acc_tpsl": 0.0
     },
     "2h": {
-     "trades": 5,
+     "trades": 6,
      "wins": 1,
-     "stops": 0,
-     "acc_strict": 20.0,
-     "acc_tpsl": 100.0
+     "stops": 1,
+     "acc_strict": 16.7,
+     "acc_tpsl": 50.0
     },
     "4h": {
-     "trades": 5,
+     "trades": 6,
      "wins": 2,
-     "stops": 0,
-     "acc_strict": 40.0,
-     "acc_tpsl": 100.0
+     "stops": 1,
+     "acc_strict": 33.3,
+     "acc_tpsl": 66.7
     }
    },
    "15m": {
@@ -527,32 +527,32 @@
    },
    "30m": {
     "30m": {
-     "trades": 2,
-     "wins": 1,
+     "trades": 1,
+     "wins": 0,
      "stops": 0,
-     "acc_strict": 50.0,
-     "acc_tpsl": 100.0
+     "acc_strict": 0.0,
+     "acc_tpsl": 0.0
     },
     "1h": {
-     "trades": 2,
-     "wins": 1,
+     "trades": 1,
+     "wins": 0,
      "stops": 0,
-     "acc_strict": 50.0,
-     "acc_tpsl": 100.0
+     "acc_strict": 0.0,
+     "acc_tpsl": 0.0
     },
     "2h": {
-     "trades": 2,
-     "wins": 1,
+     "trades": 1,
+     "wins": 0,
      "stops": 1,
-     "acc_strict": 50.0,
-     "acc_tpsl": 50.0
+     "acc_strict": 0.0,
+     "acc_tpsl": 0.0
     },
     "4h": {
-     "trades": 2,
-     "wins": 1,
+     "trades": 1,
+     "wins": 0,
      "stops": 1,
-     "acc_strict": 50.0,
-     "acc_tpsl": 50.0
+     "acc_strict": 0.0,
+     "acc_tpsl": 0.0
     }
    }
   },

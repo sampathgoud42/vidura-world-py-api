@@ -17,3 +17,11 @@ logged_at_cst,category,ticker,book,direction,signal,confluence,signal_price,entr
 2026-07-28 11:55:05,stock,COIN,B,LONG,adi_up+above_pivot+macd_x_up,8,167.86,167.86,168.53,167.19,14:35,14:35,92.9,92.9,2026-07-28 11:50,1,,30m+1h+2h+4h,4,5m,,stop,12:05
 2026-07-28 12:55:37,stock,MU,B,SHORT,below_pivot+weak_close+orb_break_dn,2,812.41,812.41,809.16,815.66,14:35,14:35,85.7,85.7,2026-07-28 12:40,2,,30m+1h+2h+4h,4,5m,,stop,12:45
 2026-07-28 13:00:45,etf,GLD,B,SHORT,vwap_loss+below_vwap,1,369.47,369.47,368.55,370.39,14:00,14:00,85.7,31.6,2026-07-28 12:30,1,,30m+1h,2,30m,,timeout,14:00
+2026-07-29 11:25:59,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,6,63984.47,63984.47,64144.43,63824.51,12:25,12:25,88.9,88.9,2026-07-29 11:20,1,,,,,FOMC rate decision 13:00 CST,stop,11:35
+2026-07-29 12:02:28,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1216.38,1216.38,1211.51,1221.25,14:35,14:35,100.0,75.0,2026-07-29 11:30,1,,30m+1h+2h+4h,4,30m,FOMC rate decision 13:00 CST,stop,12:15
+2026-07-29 12:16:14,etf,QQQ,B,LONG,adi_up+s1_bounce+strong_close,1,669.35,669.35,671.02,667.68,14:35,14:35,87.5,87.5,2026-07-29 12:00,2,,30m+1h+2h+4h,4,5m,FOMC rate decision 13:00 CST,target,12:10
+2026-07-29 13:00:53,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1216.88,1216.88,1212.01,1221.74,14:35,14:35,100.0,75.0,2026-07-29 12:30,1,,30m+1h+2h+4h,4,30m,FOMC rate decision 13:00 CST,target,14:20
+2026-07-29 13:40:04,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,6,64112.48,64112.48,64272.76,63952.2,14:40,14:40,88.9,88.9,2026-07-29 13:35,1,,,,,FOMC rate decision 13:00 CST,target,13:40
+2026-07-29 13:51:03,etf,SPY,B,LONG,delta_surge+above_pivot+strong_close+mom_ignite_up,1,741.92,741.92,743.77,740.07,14:35,14:35,88.9,61.5,2026-07-29 13:45,1,,2h+4h,2,5m,FOMC rate decision 13:00 CST,stop,14:05
+2026-07-29 14:01:06,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1217.56,1217.56,1212.69,1222.43,14:35,14:35,100.0,75.0,2026-07-29 13:30,1,,30m+1h+2h+4h,4,30m,FOMC rate decision 13:00 CST,target,14:20
+2026-07-30 12:00:34,india,BANKNIFTY,B,SHORT,below_pivot+weak_close+orb_break_dn+cvd_dn,1,588.19,588.19,586.72,589.66,13:00,13:00,100.0,33.3,2026-07-30 11:45,1,,30m+1h+2h+4h,4,15m,,,
