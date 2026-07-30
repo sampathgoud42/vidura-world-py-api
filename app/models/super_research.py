@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, Index,
+                        Integer, String)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -85,3 +86,33 @@ class Gex0dteHour(Base):
     call_wall: Mapped[float | None] = mapped_column(Float, nullable=True)
     put_wall: Mapped[float | None] = mapped_column(Float, nullable=True)
     fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PusherHeartbeat(Base):
+    """One row per push CYCLE of the browser-side 0DTE pusher, ok or not.
+
+    The snapshot tables are upserts — one row per day, one per hour — so the
+    database holds no cadence at all: "the last push landed at 14:40" is a
+    single mutable field with nothing behind it. That is why a 24-minute gap
+    on 2026-07-30 could not be resolved into "the tab died" versus "the tab
+    was alive and every push was refused". This table is append-only for
+    exactly that reason.
+
+    Read it as: gaps in ``seq`` mean the timer stopped; contiguous ``seq``
+    with ok=false means the timer ran and the push was rejected; ``seq``
+    restarting at 1 means a new document (reload, discard, or re-click).
+    """
+
+    __tablename__ = "pusher_heartbeats"
+    __table_args__ = (
+        Index("ix_pusher_heartbeats_received", "received_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    session: Mapped[str] = mapped_column(String(16))   # per-document id
+    seq: Mapped[int] = mapped_column(Integer)          # cycle number in session
+    ok: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    wall_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    mono_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    received_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

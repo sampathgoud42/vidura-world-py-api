@@ -23,7 +23,7 @@ either way.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any
 
@@ -361,3 +361,72 @@ def history_dates(db, limit: int = 60) -> list[str]:
         .all()
     )
     return [r[0] for r in rows]
+
+
+# --- pusher liveness --------------------------------------------------------
+#
+# Snapshot age answers "how old is the data". It cannot answer "is the pusher
+# alive", and those need different responses: a dead tab wants a re-click, a
+# blocked tab does not (re-clicking a tab the vendor is refusing changes
+# nothing and re-arms a loop that is already running). Heartbeats separate them.
+
+HEARTBEAT_KEEP_DAYS = 3
+DEAD_AFTER_S = 3 * PUSH_EVERY_S
+
+
+def record_heartbeat(db, session: str, seq: int, ok: bool, reason: str | None,
+                     wall_ms: int | None, mono_ms: int | None) -> None:
+    """Append one cycle. Deliberately touches no snapshot state.
+
+    It must never write a snapshot, an hour slot or a fetched_at: a cycle
+    happening is not the same event as data arriving, and conflating them
+    would make a stalled feed report itself fresh.
+    """
+    from app.models import PusherHeartbeat
+
+    db.add(PusherHeartbeat(
+        session=(session or "?")[:16],
+        seq=int(seq or 0),
+        ok=bool(ok),
+        reason=(reason or None) and str(reason)[:160],
+        wall_ms=wall_ms,
+        mono_ms=mono_ms,
+    ))
+    # bounded by age, not by count, so a chatty session cannot evict the
+    # history of a quiet one
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=HEARTBEAT_KEEP_DAYS)
+    db.query(PusherHeartbeat).filter(PusherHeartbeat.received_at < cutoff).delete(
+        synchronize_session=False
+    )
+    db.commit()
+
+
+def pusher_state(db) -> dict:
+    """pushing / blocked / dead / unknown, from the heartbeat trail.
+
+    "blocked" is the state worth naming: heartbeats are arriving so the tab is
+    alive and the timer is running, but every cycle is being refused. That
+    looks identical to a dead pusher from snapshot age alone, and it calls for
+    a completely different fix.
+    """
+    from app.models import PusherHeartbeat
+
+    row = (db.query(PusherHeartbeat)
+             .order_by(PusherHeartbeat.id.desc()).first())
+    if row is None:
+        return {"pusher_state": "unknown", "pusher_age_seconds": None,
+                "pusher_reason": None, "pusher_seq": None}
+
+    received = row.received_at
+    if received.tzinfo is None:
+        received = received.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - received).total_seconds()
+
+    if age > DEAD_AFTER_S:
+        state = "dead" if _window_open() else "idle"
+    else:
+        state = "pushing" if row.ok else "blocked"
+    return {"pusher_state": state,
+            "pusher_age_seconds": round(age, 1),
+            "pusher_reason": row.reason,
+            "pusher_seq": row.seq}

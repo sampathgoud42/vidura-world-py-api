@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
@@ -221,6 +221,47 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Chrome's Private Network Access: a PUBLIC https page fetching a LOOPBACK
+    # address gets an extra preflight carrying
+    # Access-Control-Request-Private-Network, which must be answered with the
+    # matching Allow header. Starlette's CORSMiddleware does not implement PNA
+    # and rejects that preflight outright with "400 Disallowed CORS
+    # private-network", which kills the getgamma 0DTE pusher SILENTLY — the
+    # POST never leaves the browser and the tab-side catch swallows it.
+    #
+    # Deliberately narrow. PNA is the only thing standing between allow_origins
+    # ["*"] and any site the user happens to visit POSTing to a local API that
+    # can start and stop trading bots. So it is granted for exactly the origin
+    # that needs it, on exactly the one endpoint that origin pushes to, and
+    # nowhere else.
+    PNA_ORIGINS = {"https://www.getgamma.io", "https://getgamma.io"}
+    PNA_PATHS = {
+        "/api/v1/super/gex0dte/refresh",
+        "/api/v1/super/gex0dte/heartbeat",
+    }
+
+    @app.middleware("http")
+    async def private_network_preflight(request: Request, call_next):
+        if (
+            request.method == "OPTIONS"
+            and request.headers.get("access-control-request-private-network") == "true"
+        ):
+            origin = request.headers.get("origin", "")
+            if origin in PNA_ORIGINS and request.url.path in PNA_PATHS:
+                return Response(
+                    status_code=200,
+                    headers={
+                        "Access-Control-Allow-Origin": origin,
+                        "Access-Control-Allow-Methods": "POST, OPTIONS",
+                        "Access-Control-Allow-Headers":
+                            request.headers.get("access-control-request-headers", "content-type"),
+                        "Access-Control-Allow-Private-Network": "true",
+                        "Access-Control-Max-Age": "600",
+                        "Vary": "Origin",
+                    },
+                )
+        return await call_next(request)
 
     @app.middleware("http")
     async def api_key_guard(request: Request, call_next):

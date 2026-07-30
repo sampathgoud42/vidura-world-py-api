@@ -140,6 +140,7 @@ def get_gex0dte(db: Session = Depends(get_db)) -> dict:
             detail="no 0DTE snapshot yet — press Update 0DTE to fetch one",
         )
     payload.update(gex0dte.staleness(payload.get("fetched_at")))
+    payload.update(gex0dte.pusher_state(db))
     return payload
 
 
@@ -150,6 +151,9 @@ class Gex0dteRefresh(BaseModel):
 
     payload: dict | None = None
     ticker: str = "SPY"
+    # per-cycle metadata from the browser pusher; declared because pydantic
+    # would otherwise drop it silently and the trail would vanish
+    client: dict | None = None
 
 
 @router.post("/gex0dte/refresh", operation_id="refreshGex0dte")
@@ -167,6 +171,32 @@ def refresh_gex0dte(body: Gex0dteRefresh, db: Session = Depends(get_db)) -> dict
     svc.store_payload(db, "gex0dte", view, source="getgamma.io")
     gex0dte.record_hour(db, view)      # and into this hour's history slot
     return view
+
+
+class HeartbeatIn(BaseModel):
+    """One push cycle reported by the browser pusher, successful or not."""
+
+    session: str = "?"
+    seq: int = 0
+    ok: bool = False
+    reason: str | None = None
+    wall: int | None = None
+    mono: int | None = None
+
+
+@router.post("/gex0dte/heartbeat", operation_id="gex0dtePusherHeartbeat")
+def gex0dte_heartbeat(body: HeartbeatIn, db: Session = Depends(get_db)) -> dict:
+    """Record that a push cycle happened, whatever its outcome.
+
+    Strictly separate from the data path: it never fetches the vendor, never
+    stores a snapshot and never fills an hour slot. Routing liveness through
+    /refresh would make the SERVER call getgamma on every failed cycle — the
+    one thing this design does not do — and would stamp a stalled feed as
+    fresh.
+    """
+    gex0dte.record_heartbeat(db, body.session, body.seq, body.ok, body.reason,
+                             body.wall, body.mono)
+    return {"ok": True}
 
 
 class AddTickerRequest(BaseModel):
