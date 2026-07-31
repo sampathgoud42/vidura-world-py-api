@@ -18,10 +18,20 @@ python -m venv .venv
 run.bat
 ```
 
+`run.bat` starts this API alone. To bring up the **API and the web desk
+together**, use the launcher in the frontend repo instead — it starts both,
+skips the API if 8790 is already listening, and captures the access log:
+
+```bat
+cd D:\_projects\vidura-world-js
+vidura.bat            :: or ./vidura.sh on macOS/Linux/Git Bash
+```
+
 Then open:
 
 | URL | What |
 | --- | --- |
+| http://localhost:5173/super-signals-intraday | the desk (via the launcher) |
 | http://127.0.0.1:8790/docs | Swagger UI (interactive) |
 | http://127.0.0.1:8790/redoc | ReDoc |
 | http://127.0.0.1:8790/openapi.json | OpenAPI 3 spec |
@@ -87,7 +97,14 @@ tests/                   pytest E2E suite over TestClient + temp SQLite
 | `wellness_entries` | time-stamped wellness data, queried over a rolling window (default 60 days) |
 | `tennis_predictions` | stored model outputs served to clients |
 | `super_signals` | A/B-book super_research signal history (live + archive ledgers) |
-| `daily_snapshots` | daily GEX / econ JSON history (`gex`, `econ`, `gex_raw_<ticker>`) |
+| `daily_snapshots` | daily GEX / econ JSON history (`gex`, `econ`, `gex_raw_<ticker>`, `gex0dte`, `super_config`, `regen`) — one row per (kind, date) |
+| `gex0dte_hourly` | SPY 0DTE net gamma per CST trading hour, 08:00–16:00; last write in the hour wins |
+| `pusher_heartbeats` | append-only, one row per 0DTE push cycle (pass or fail), kept 3 days |
+
+The last two are append-per-slot on purpose. Everything else here is an
+upsert, which means the database held no **cadence** — and that is precisely
+why a 25-minute 0DTE stall could not be resolved into "the tab died" versus
+"the tab was alive and every push was refused".
 
 ## API surface (all under `/api/v1`)
 
@@ -131,6 +148,35 @@ unchanged files, so the database is the durable record without any
 manual sync.
 Legacy-compatible aliases at `/api/super/state|on|config` serve the exact
 vite-middleware shapes, so the existing frontend can point straight here.
+
+**Engine tuning** — `GET/POST /super/engine-pct` (per-category `TP_PCT`/
+`SL_PCT`, the race target that defines a win; reports `mixed` rather than
+averaging when a category's ticker folders disagree),
+`GET/POST /super/engine-gates` (`A_TPSL`/`MIN_TPSL`, the tp-before-sl
+admission gates — **desk-wide**, because they are module constants in
+`engine_common.py` shared by every ticker),
+`POST /super/tickers` (scaffold + register + bootstrap a new ticker into a
+category by copying a sibling's calibration) and
+`GET /super/tickers/{id}/status`,
+`POST /super/regenerate` plus `GET /super/regenerate/status` — the launch is
+detached, so the status endpoint checks the recorded PIDs against the live
+process table (matched on **cmdline**, since a recycled PID would otherwise
+look like a job still running, or worse, like ours finishing).
+
+Changing the race target auto-invalidates the score cache
+(`engine_scores.json` is fingerprinted on tp/sl) but does not re-discover
+`ensemble.csv` candidates; changing the gates invalidates nothing, since they
+filter scores that already exist. Both endpoints say so in their response.
+
+**0DTE dealer gamma** — `GET /super/gex0dte` (stored view plus `stale`,
+`window_open` and `pusher_state`), `POST /super/gex0dte/refresh`,
+`POST /super/gex0dte/heartbeat` (one append-only row per push cycle, pass or
+fail — the only thing that distinguishes a dead pusher from a blocked one),
+`GET /super/gex0dte/history[?date=]` and `/history/dates` (hourly net gamma,
+08:00–16:00 CST, uncaptured hours reported as 0 with `captured: false`).
+See `docs/GEX_0DTE.md` — including why the server cannot fetch getgamma
+itself, and the narrow Private Network Access allowance in `app/main.py` that
+the browser pusher depends on.
 
 ## Safety model
 
