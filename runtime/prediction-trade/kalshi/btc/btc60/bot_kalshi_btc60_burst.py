@@ -52,6 +52,10 @@ TP_CENTS           = 20      # take-profit offset
 # entry than from a 70c one: tp = entry x (1 + pct/100).
 TP_PCT_OVERRIDE    = float(__import__("os").getenv("BTC60_TP_PCT", "0") or 0)
 SL_CENTS           = 15      # stop-loss offset
+# Per-trade stop override, mirroring TP_PCT_OVERRIDE below: a percent BELOW
+# entry rather than a fixed 15c, so the stop scales with the entry price the
+# way the user's number implies. Unset (0) keeps the fixed offset.
+SL_PCT_OVERRIDE    = float(__import__("os").getenv("BTC60_SL_PCT", "0") or 0)
 TIME_STOP_MIN      = 30      # signal horizon
 ENTRY_BID_LO       = 30      # entry band widened 40-65 -> 30-70 (owner,
 ENTRY_BID_HI       = 70      # 2026-07-12, after repeated ATM price-gate misses)
@@ -659,7 +663,10 @@ async def monitor_position(c: KalshiClient, ticker: str, side: str,
     # would give 34, delivering 13.3% instead of the 15% asked for.
     tp = (min(99, max(entry + 1, int(entry * (1 + TP_PCT_OVERRIDE / 100.0) + 0.5)))
           if TP_PCT_OVERRIDE > 0 else min(99, entry + TP_CENTS))
-    sl = max(1, entry - SL_CENTS)
+    # half-UP for the same reason as the TP above: banker's rounding would
+    # under-deliver the stop the operator asked for.
+    sl = (max(1, min(entry - 1, int(entry * (1 - SL_PCT_OVERRIDE / 100.0) + 0.5)))
+          if SL_PCT_OVERRIDE > 0 else max(1, entry - SL_CENTS))
     time_stop = _utc_now() + timedelta(minutes=TIME_STOP_MIN)
     hard = min(deadline, time_stop)
     await place_order(c, ticker, "sell", side, contracts, tp, "TP")

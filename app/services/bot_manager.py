@@ -159,6 +159,21 @@ def _bankroll_env(env: dict[str, str], options: "BotStartOptions") -> None:
         env["BTC60_TARGET_PCT"] = f"{options.target_pct:g}"
 
 
+# Knobs worth showing on the desk while a bot runs. Credentials and paths are
+# deliberately absent — this is rendered in the browser.
+_SHOWN_ENV = (
+    "KALSHI_PROFIT_PCT", "BOT152_TP_PCT", "BTC60_TP_PCT",
+    "KALSHI_STOP_PCT", "BTC60_SL_PCT",
+    "DO_YOU_HAVE_STOP_SELL", "MONITOR_SL_TRIGGER",
+    "KALSHI_CONTRACTS", "MAX_TRADES_PER_MARKET",
+    "BTC_BANKROLL", "TARGET_PORTFOLIO_PCT", "DO_NOT_BUY_IF_PORTFOLIO_BELOW",
+    "HALT_MACHINE_SHUTDOWN", "PAPER_TRADING",
+)
+
+# btc15 v5 has no stop-loss at all — "anything unsold rides to settlement".
+_NO_STOP_LOSS = {("btc15", "v5")}
+
+
 def _trade_target_env(env: dict[str, str], options: "BotStartOptions") -> None:
     """PER-TRADE profit target, % over entry — for EVERY bot family.
 
@@ -172,12 +187,27 @@ def _trade_target_env(env: dict[str, str], options: "BotStartOptions") -> None:
         btc15 v5       : BOT152_TP_PCT      (else a flat 90c sell)
         btc60 both     : BTC60_TP_PCT       (fable5 also pins its learner)
     """
-    if options.tp_pct is None:
-        return
-    pct = f"{options.tp_pct:g}"
-    env["KALSHI_PROFIT_PCT"] = pct
-    env["BOT152_TP_PCT"] = pct
-    env["BTC60_TP_PCT"] = pct
+    if options.tp_pct is not None:
+        pct = f"{options.tp_pct:g}"
+        env["KALSHI_PROFIT_PCT"] = pct
+        env["BOT152_TP_PCT"] = pct
+        env["BTC60_TP_PCT"] = pct
+
+    # PER-TRADE stop loss, % below entry. Same shape as the target above:
+    #     btc15 v2/v3/v4 : KALSHI_STOP_PCT (shared _tp_sl, already env-driven)
+    #     btc60 both     : BTC60_SL_PCT    (burst percent-instead-of-15c,
+    #                                       fable5 pins its learner)
+    # btc15 v5 is deliberately absent — it HAS no stop loss ("anything unsold
+    # rides to settlement"), so there is no knob to set and inventing one
+    # would be a UI that lies. start_bot() rejects the combination instead.
+    if options.sl_pct is not None:
+        pct = f"{options.sl_pct:g}"
+        env["KALSHI_STOP_PCT"] = pct
+        env["BTC60_SL_PCT"] = pct
+        # v2/v3/v4 only run the stop monitor when both switches are on, and a
+        # user who typed a stop means to have one.
+        env["DO_YOU_HAVE_STOP_SELL"] = "TRUE"
+        env["MONITOR_SL_TRIGGER"] = "TRUE"
 
 
 class BotStartOptions:
@@ -185,13 +215,15 @@ class BotStartOptions:
 
     def __init__(
         self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
-        contracts=None, kill_existing: bool = False, tp_pct=None, bank=None,
+        contracts=None, kill_existing: bool = False, tp_pct=None, sl_pct=None,
+        bank=None,
     ):
         self.mode = mode
         self.sports = sports
         self.sport_settings = sport_settings
         self.target_pct = target_pct
         self.tp_pct = tp_pct
+        self.sl_pct = sl_pct
         self.bank = bank
         self.contracts = contracts
         self.kill_existing = kill_existing
@@ -356,6 +388,16 @@ def start_bot(
     options = options or BotStartOptions(mode=mode)
     options.mode = mode
 
+    # Refuse rather than silently drop it: accepting a stop for an engine that
+    # has none would leave the desk showing "SL 30%" over a bot that rides
+    # every loser to settlement.
+    if options.sl_pct is not None and (bot_key, ver.version) in _NO_STOP_LOSS:
+        raise BotManagerError(
+            f"{bot_key} {ver.version} has no stop loss — it holds to settlement by "
+            "design. Start it without a stop, or pick another version.",
+            400,
+        )
+
     if options.kill_existing:
         # explicit "take over": clear anything already running this bot,
         # including processes the API never started
@@ -449,8 +491,23 @@ def start_bot(
             extra["target_pct"] = options.target_pct
         if options.tp_pct is not None:
             extra["tp_pct"] = options.tp_pct
+        if options.sl_pct is not None:
+            extra["sl_pct"] = options.sl_pct
         if options.bank is not None:
             extra["bank"] = options.bank
+        # What the process ACTUALLY got, for the desk to show while it runs.
+        # Built from the resolved env rather than the request, so a knob this
+        # engine never received cannot appear as though it were in force.
+        extra["config"] = {
+            "mode": mode,
+            "version": ver.version,
+            "tp_pct": options.tp_pct,
+            "sl_pct": options.sl_pct,
+            "bank": options.bank,
+            "contracts": options.contracts,
+            "target_pct": options.target_pct,
+            "env": {k: env[k] for k in _SHOWN_ENV if k in env},
+        }
         run = BotRun(
             user_id=user.user_id,
             bot_key=bot_key,

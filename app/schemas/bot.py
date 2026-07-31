@@ -68,6 +68,19 @@ class BotStartRequest(BaseModel):
         ),
         examples=[15],
     )
+    sl_pct: float | None = Field(
+        default=None, gt=0, lt=100,
+        description=(
+            "PER-TRADE stop loss, % BELOW the entry price. Routed to "
+            "KALSHI_STOP_PCT (btc15 v2/v3/v4, which share one _tp_sl) and "
+            "BTC60_SL_PCT (btc60 burst uses a percent instead of its fixed 15c "
+            "offset; fable5 pins its learner so the stop cannot drift). Setting "
+            "it also turns the v2/v3/v4 stop monitor on. Rejected for btc15 v5, "
+            "which has no stop loss by design — it holds to settlement. Must be "
+            "under 100: a 100% stop is the position going to zero."
+        ),
+        examples=[30],
+    )
     bank: float | None = Field(
         default=None, gt=0, le=1_000_000,
         description=(

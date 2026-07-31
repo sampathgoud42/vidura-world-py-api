@@ -127,6 +127,20 @@ folder JSON on first read, writes back on update),
 `GET/POST /users/{id}/wellness/data` (60-day window default),
 `GET /users/{id}/wellness/options` (selection choices for app UIs).
 
+**Per-trade risk (BTC)** — `POST /bots/btc/start` takes `tp_pct` (profit
+target, % over entry) and `sl_pct` (stop loss, % below entry). The stop routes
+to `KALSHI_STOP_PCT` (btc15 v2/v3/v4, which share one `_tp_sl`) and
+`BTC60_SL_PCT` (btc60 burst uses a percent in place of its fixed 15c offset;
+fable5 pins its learner so the stop cannot drift), and switches the btc15 stop
+monitor on. It is **rejected** for btc15 v5, which has no stop loss by design —
+it holds every position to settlement, so accepting one would leave the desk
+advertising a stop that does not exist.
+
+Each run records the config it was actually launched with in
+`bot_runs.extra.config`, built from the resolved environment rather than the
+request, so a knob a given engine never received cannot appear as though it
+were in force. The desk renders it under the running engine.
+
 **Tennis models** — `GET /models/tennis`,
 `GET/POST /models/tennis/{model_id}/predictions`.
 

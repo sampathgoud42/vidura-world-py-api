@@ -85,6 +85,10 @@ TAKE_PROFIT_PCT  = 15.0     # sell when bid >= entry * 1.15   (bounds 12-20)
 # and the input would be a lie. Unset (0) keeps the self-tuning behaviour.
 TP_PCT_OVERRIDE  = float(__import__("os").getenv("BTC60_TP_PCT", "0") or 0)
 STOP_LOSS_PCT    = 30.0     # dump when bid <= entry * 0.70   (bounds 20-35)
+# Per-trade stop-loss override, same contract as BTC60_TP_PCT above: when set
+# the user's number WINS over the persisted state file and the learner, so an
+# explicit stop cannot silently drift. Unset (0) keeps the self-tuning.
+SL_PCT_OVERRIDE  = float(__import__("os").getenv("BTC60_SL_PCT", "0") or 0)
 PV_PCT_PER_TRADE = 10.0     # size each trade at 10% of the BTC BANKROLL (5-15)
 
 # The Kalshi account is SHARED with other bots (sports, perp, ...), so this
@@ -813,6 +817,12 @@ class Learner:
             self.tp_pct = TP_PCT_OVERRIDE
             _log("LEARN", f"tp_pct pinned to {self.tp_pct:.1f}% by BTC60_TP_PCT "
                           f"- the learner will not adjust it")
+        if SL_PCT_OVERRIDE > 0:
+            # same placement and reason as the tp pin: after the state load,
+            # so a stored sl_pct cannot override what the operator typed
+            self.sl_pct = SL_PCT_OVERRIDE
+            _log("LEARN", f"sl_pct pinned to {self.sl_pct:.1f}% by BTC60_SL_PCT "
+                          f"- the learner will not adjust it")
         if BTC_BANKROLL_RESEED:
             # an explicit per-bay bankroll reseeds the ledger, also after the
             # state load, so the number the operator typed is the one traded
@@ -930,7 +940,9 @@ class Learner:
 
         win_dds = sorted(float(r["max_dd_pct"]) for r in rows
                          if r.get("max_dd_pct") and float(r.get("ret_pct") or 0) > 0)
-        if len(win_dds) >= 10:
+        if SL_PCT_OVERRIDE > 0:
+            pass                      # user pinned the stop; do not drift it
+        elif len(win_dds) >= 10:
             p90 = win_dds[int(0.9 * (len(win_dds) - 1))]
             new_sl = self._clamp(p90 + 5.0, *SL_BOUNDS)
             if abs(new_sl - self.sl_pct) >= 1.0:
