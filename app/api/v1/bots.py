@@ -23,7 +23,7 @@ from app.schemas.bot import (
     BotStopRequest,
 )
 from app.schemas.trade import PerformanceSummary, TradeHistoryPage, TradeOut
-from app.services import bot_manager, ingest
+from app.services import bot_manager, ingest, reconcile as reconcile_svc
 from app.services import trades as trades_svc
 from app.services.bot_registry import BOTS, get_bot, registry_report
 
@@ -319,6 +319,36 @@ def sports_active_bets(
     _refresh_mirror(db, user_id, ["sports"])
     open_trades = trades_svc.active_trades(db, user_id=user_id, bot_key="sports")
     return [TradeOut.model_validate(t) for t in open_trades]
+
+
+@router.post("/reconcile", operation_id="reconcileOpenTrades")
+def reconcile_open_trades(
+    user_id: str = Query(..., description="whose ledger to reconcile"),
+    hours: int = Query(default=reconcile_svc.DEFAULT_STALE_HOURS, ge=1, le=720,
+                       description="only rows open longer than this are checked"),
+    apply: bool = Query(default=False,
+                        description="false previews the plan; true writes it"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Close ledger rows still `open` that Kalshi says are finished.
+
+    Covers every family on the Kalshi account (btc15, btc60, btcperp, sports).
+    A row is only touched when it is BOTH older than `hours` AND absent from
+    the account's active positions; its P&L is then taken from fills +
+    settlements, not from the bot's own estimate.
+
+    Previews by default — it rewrites booked P&L, so seeing the plan and
+    applying it are deliberately two calls.
+    """
+    require_local_runtime("Reconciling trades against Kalshi")
+    user = _user_or_404(db, user_id)
+    # Pull the CSVs in first: a row the bot closed but never synced should be
+    # settled from its own ledger, not re-derived from the exchange.
+    _refresh_mirror(db, user_id, ["btc15", "btc60", "sports"])
+    try:
+        return reconcile_svc.reconcile(db, user, hours=hours, dry_run=not apply)
+    except reconcile_svc.ReconcileError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
 
 @router.get("/sports/performance", operation_id="getSportsPerformance", response_model=PerformanceSummary)

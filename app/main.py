@@ -178,6 +178,52 @@ async def _earnings_warm_loop() -> None:
         await asyncio.sleep(6 * 3600)  # half the staleness window
 
 
+def _run_reconcile(hours: int) -> list[dict]:
+    """One reconcile pass per user, in a worker thread."""
+    from app.core.database import SessionLocal
+    from app.models import User
+    from app.services import reconcile as rec
+
+    out = []
+    db = SessionLocal()
+    try:
+        for user in db.query(User).all():
+            try:
+                out.append(rec.reconcile(db, user, hours=hours, dry_run=False))
+            except rec.ReconcileError as exc:
+                # No credentials, or Kalshi unreachable. Expected on hosts
+                # without a funded account — never a reason to kill the loop.
+                out.append({"user": user.username, "error": str(exc)})
+    finally:
+        db.close()
+    return out
+
+
+async def _reconcile_loop(interval: int, hours: int) -> None:
+    """Settle rows the exchange has finished but the bot never closed.
+
+    A bot can miss its own exit — it crashes mid-close, or the market settles
+    between cycles — leaving a row `open` forever with its cost booked and no
+    P&L. Hourly is plenty: the rows this catches have already been stranded
+    for a day, and each pass costs one positions call plus a few fills reads.
+    """
+    log = logging.getLogger("app.reconcile")
+    await asyncio.sleep(45)  # let startup and the first CSV sync settle
+    while True:
+        try:
+            for result in await asyncio.to_thread(_run_reconcile, hours):
+                if result.get("error"):
+                    log.debug("reconcile skipped: %s", result["error"])
+                elif result.get("updated"):
+                    log.info("reconcile settled %s stranded row(s) from the exchange",
+                             result["updated"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # keep the loop alive on any single failure
+            log.warning("reconcile pass failed: %s", exc)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -190,6 +236,10 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(_gex_daily_loop()))
     if settings.earnings_enabled:
         tasks.append(asyncio.create_task(_earnings_warm_loop()))
+    if settings.reconcile_enabled and not settings.cloud_mode:
+        tasks.append(asyncio.create_task(
+            _reconcile_loop(settings.reconcile_interval_s, settings.reconcile_stale_hours)
+        ))
     yield
     for task in tasks:
         task.cancel()

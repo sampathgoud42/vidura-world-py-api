@@ -92,6 +92,16 @@ class Settings(BaseSettings):
     # read it. Disable in tests / air-gapped hosts.
     earnings_enabled: bool = True
 
+    # Sweep for ledger rows still `open` that the exchange says are finished,
+    # and settle them from fills+settlements. Reads Kalshi read-only and never
+    # touches a ticker that is still an active position. Off in tests and on
+    # hosts with no credentials, where every call would just fail.
+    reconcile_enabled: bool = True
+    reconcile_interval_s: int = 3600
+    # Matches the endpoint default: younger than this and the bot is probably
+    # just still holding.
+    reconcile_stale_hours: int = 24
+
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the
@@ -139,6 +149,9 @@ def get_settings() -> Settings:
         # Never auto-ingest from a bot repo that does not exist in a
         # container, and never try to run engines there.
         settings.super_auto_sync = False
+        # No credential folders in a container, so every pass would just log
+        # a failure per user.
+        settings.reconcile_enabled = False
     if settings.is_sqlite:
         settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     try:
