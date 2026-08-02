@@ -74,10 +74,19 @@ def active_trades(db: Session, *, user_id: str | None = None, bot_key: str | Non
 
 
 def performance(
-    db: Session, *, user_id: str | None = None, bot_key: str | None = None, days: int | None = None
+    db: Session, *, user_id: str | None = None, bot_key: str | None = None,
+    days: int | None = None, mode: str = "live",
 ) -> PerformanceSummary:
+    """Aggregate over the SAME rows the trade-history view shows.
+
+    ``mode`` defaults to 'live' to match the history endpoint. It used to fall
+    through to query_trades' 'all', so the summary card counted paper trades
+    while the table beneath it listed only live ones — two different totals
+    for one panel, which is exactly how a scoreboard stops being trustworthy.
+    """
     _, trades = query_trades(
-        db, user_id=user_id, bot_key=bot_key, days=days, limit=100_000, offset=0
+        db, user_id=user_id, bot_key=bot_key, days=days, mode=mode,
+        limit=100_000, offset=0,
     )
     by_status: dict[str, int] = {}
     wins = losses = settled = 0

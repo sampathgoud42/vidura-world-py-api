@@ -355,10 +355,13 @@ def reconcile_open_trades(
 def sports_performance(
     user_id: str | None = Query(default=None),
     days: int | None = Query(default=None, ge=1, le=3660),
+    mode: str = Query(default="live", pattern="^(live|paper|all)$",
+                      description="must match the trade-history view, or the "
+                                  "scoreboard totals a different set of rows than it lists"),
     db: Session = Depends(get_db),
 ) -> PerformanceSummary:
     _refresh_mirror(db, user_id, ["sports"])
-    return trades_svc.performance(db, user_id=user_id, bot_key="sports", days=days)
+    return trades_svc.performance(db, user_id=user_id, bot_key="sports", days=days, mode=mode)
 
 
 @router.get("/sports/trades", operation_id="getSportsTrades", response_model=TradeHistoryPage)

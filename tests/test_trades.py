@@ -67,7 +67,16 @@ def test_sports_active_bets_and_performance(client, user):
     assert len(bets) == 1
     assert bets[0]["ticker"] == "KXATPMATCH-OPEN"
 
+    # These are mock rows, so is_live is False. The summary defaults to LIVE
+    # for the same reason the history table does — the scoreboard must total
+    # exactly the rows it lists, not a wider set.
     resp = client.get("/api/v1/bots/sports/performance", params={"user_id": uid})
+    assert resp.status_code == 200
+    assert resp.json()["trades"] == 0, "paper rows must not reach the live scoreboard"
+
+    resp = client.get(
+        "/api/v1/bots/sports/performance", params={"user_id": uid, "mode": "all"}
+    )
     assert resp.status_code == 200
     perf = resp.json()
     assert perf["trades"] == 3
@@ -75,6 +84,12 @@ def test_sports_active_bets_and_performance(client, user):
     assert perf["losses"] == 1
     assert perf["win_rate"] == 0.5
     assert perf["total_pnl_usd"] == 6.0
+
+    # ...and asking for paper explicitly finds the same rows.
+    resp = client.get(
+        "/api/v1/bots/sports/performance", params={"user_id": uid, "mode": "paper"}
+    )
+    assert resp.json()["trades"] == 3
 
 
 def test_btc_trades_endpoint(client, user):

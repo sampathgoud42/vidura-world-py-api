@@ -174,6 +174,36 @@ _SHOWN_ENV = (
 _NO_STOP_LOSS = {("btc15", "v5")}
 
 
+def _portfolio_at_start(user: User) -> dict | None:
+    """Account value the moment this run began, or None if unreadable.
+
+    Best-effort by construction: a Kalshi hiccup must never stop a bot from
+    launching, so every failure here is swallowed and the run simply carries
+    no baseline.
+
+    Account-WIDE, and the account is shared with the other bots. So the delta
+    against it is "what the account did while this bot ran", not "what this
+    bot earned" — anything reading it has to say so, or it becomes a P&L
+    figure that quietly credits one bot with another's trades.
+    """
+    try:
+        from app.services import credentials, kalshi_client
+
+        creds = credentials.load_kalshi_credentials(user.user_root_folder)
+        client = kalshi_client.KalshiClient(
+            creds.api_key_id, creds.private_key_path, creds.base_uri
+        )
+        try:
+            pv = client.portfolio()
+        finally:
+            client.close()
+        pv["at"] = datetime.now(timezone.utc).isoformat()
+        return pv
+    except Exception as exc:  # noqa: BLE001 - a baseline is a nicety, not a gate
+        logger.info("no portfolio baseline for this run: %s", exc)
+        return None
+
+
 def _trade_target_env(env: dict[str, str], options: "BotStartOptions") -> None:
     """PER-TRADE profit target, % over entry — for EVERY bot family.
 
@@ -507,6 +537,10 @@ def start_bot(
             "contracts": options.contracts,
             "target_pct": options.target_pct,
             "env": {k: env[k] for k in _SHOWN_ENV if k in env},
+            # Account baseline, so the desk can show "PV then -> PV now".
+            # Read AFTER the process is confirmed alive: a start that failed
+            # should not leave a baseline implying a session that never ran.
+            "pv_at_start": _portfolio_at_start(user),
         }
         run = BotRun(
             user_id=user.user_id,
