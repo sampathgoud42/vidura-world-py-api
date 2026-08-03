@@ -18,9 +18,10 @@ pieces that differ in v2:
               40–65¢ with no statistically usable price edge across only 6
               settled outcomes, so we optimise for cost, not a fitted price).
               Direction is REVALIDATED (best-of-4) at the moment of entry.
-  • Sizing  — always CONTRACTS_PV_PCT of portfolio (ignores
-              DO_YOU_HAVE_STOP_SELL).  The same contract count + avg_cents
-              are reused everywhere until the market closes.
+  • Sizing  — CONTRACTS_PV_PCT of portfolio; a desk-fixed size wins when
+              KALSHI_CONTRACTS is set with CONTRACTS_PV_PCT=0 (user 08/03).
+              The same contract count + avg_cents are reused everywhere
+              until the market closes.
   • Monitor — monitor_trade_v2(): a SELL_SCORE accumulator fed by three
               market signals (MS1 bid-momentum, MS2 live-vs-strike,
               MS3 strong-signal) on a ~15s cadence, plus bid/time-based
@@ -802,6 +803,114 @@ async def monitor_trade_v2(
 # ╔════════════════════════════════════════════════════════════════════════════╗
 # ║  MAIN LOOP (v2)                                                          ║
 # ╚════════════════════════════════════════════════════════════════════════════╝
+# ── true P&L reconcile (user 08/03) ──────────────────────────────────────────
+# The CSV's pnl at order time is the EXPECTED figure (limit price as exit).
+# On every market rollover — e.g. at 16:00 for the 15:45 market — ask the
+# exchange what actually happened (fills + settlement) and correct the row.
+# Fills-only truth: sells − buys − fees + settlement revenue, priced on the
+# token we HELD; a fill's own 'side' is order matching, not our holding.
+_RECON_MAX_TRIES = 3      # settlement revenue can lag the close by a minute
+
+
+def _recon_read_csv(ticker: str):
+    """(all rows incl. header, matching data-row indexes, pnl col, dir col)."""
+    import csv as _csv
+
+    p = Path(v1.CSV_FILE)
+    if not p.is_file():
+        return None
+    with p.open(newline="", encoding="utf-8") as f:
+        rows = list(_csv.reader(f))
+    if not rows:
+        return None
+    hdr = rows[0]
+    try:
+        i_tk, i_pnl, i_dir = hdr.index("ticker"), hdr.index("pnl"), hdr.index("direction")
+    except ValueError:
+        return None
+    hits = [i for i in range(1, len(rows))
+            if len(rows[i]) > i_tk and rows[i][i_tk] == ticker]
+    return rows, hits, i_pnl, i_dir
+
+
+async def _exchange_pnl(c, ticker: str, side: str):
+    """(realized pnl, fill count) for one market, or (None, 0) if no fills yet."""
+    key = "no_price_dollars" if (side or "yes").lower() == "no" else "yes_price_dollars"
+    d = await c.req("GET", "/portfolio/fills", params={"ticker": ticker, "limit": 200})
+    fills = d.get("fills", [])
+    if not fills:
+        return None, 0
+    pnl = 0.0
+    for fx in fills:
+        cnt = float(fx.get("count_fp") or fx.get("count") or 0)
+        px = float(fx.get(key) or 0)
+        fee = float(fx.get("fee_cost") or 0)
+        pnl += (cnt * px - fee) if fx.get("action") == "sell" else -(cnt * px + fee)
+    d = await c.req("GET", "/portfolio/settlements", params={"ticker": ticker, "limit": 20})
+    for s in d.get("settlements", []):
+        if ticker in (s.get("ticker"), s.get("market_ticker")):
+            pnl += float(s.get("revenue") or 0) / 100.0
+    return round(pnl, 2), len(fills)
+
+
+async def _reconcile_prev_market(c, ticker: str) -> bool:
+    """Correct the previous market's CSV pnl from the exchange.
+
+    Returns True when this ticker needs no further attempts (updated, already
+    accurate, never traded, or unattributable) and False to retry next
+    rollover — fills/settlement can lag the close.
+    """
+    got = _recon_read_csv(ticker)
+    if got is None:
+        return True
+    _rows, hits, _i_pnl, i_dir = got
+    if not hits:
+        return True                       # never traded that market
+    if len(hits) > 1:
+        # one net exchange figure cannot be split across several rows without
+        # inventing an allocation — say so instead of corrupting the ledger
+        print(f"  [TRUEPNL] {ticker}: {len(hits)} CSV rows share the ticker - "
+              f"net exchange P&L not attributable, leaving as logged")
+        return True
+    side = _rows[hits[0]][i_dir] if len(_rows[hits[0]]) > i_dir else "yes"
+    try:
+        pnl, n_fills = await _exchange_pnl(c, ticker, side)
+    except Exception as e:                                    # noqa: BLE001
+        print(f"  [TRUEPNL] {ticker}: exchange fetch failed ({e}) - will retry")
+        return False
+    if pnl is None:
+        return False                      # fills not visible yet — retry
+
+    # Re-read AFTER the awaits: the monitor could have appended a row while
+    # the fills call was in flight, and rewriting from the stale copy would
+    # silently drop it.
+    got = _recon_read_csv(ticker)
+    if got is None:
+        return True
+    rows, hits, i_pnl, _ = got
+    if len(hits) != 1:
+        return True
+    row = rows[hits[0]]
+    old = row[i_pnl] if len(row) > i_pnl else ""
+    try:
+        old_f = float(old or 0)
+    except ValueError:
+        old_f = 0.0
+    if abs(pnl - old_f) < 0.005:
+        print(f"  [TRUEPNL] {ticker}: CSV pnl {old or '0'} matches the exchange")
+        return True
+    row[i_pnl] = f"{pnl:.2f}"
+    import csv as _csv
+
+    tmp = Path(str(v1.CSV_FILE) + ".tmp")
+    with tmp.open("w", newline="", encoding="utf-8") as f:
+        _csv.writer(f).writerows(rows)
+    os.replace(tmp, v1.CSV_FILE)
+    print(f"  [TRUEPNL] {ticker}: pnl {old or '0'} -> {pnl:.2f} "
+          f"({n_fills} fill(s) + settlement - exchange truth)")
+    return True
+
+
 async def run() -> None:
     _log_fh    = _RotatingLogFile()
     sys.stdout = _Tee(sys.__stdout__, _log_fh)
@@ -824,9 +933,25 @@ async def run() -> None:
     # Live references to background bid-price loggers (one per market) so they
     # aren't garbage-collected while running.
     _bid_tasks: set = set()
+    # markets whose CSV pnl still needs the exchange's number: [(ticker, tries)]
+    _recon_pending: list = []
     try:
         while True:
             market        = await wait_for_market(c, skip=current_ticker)
+            # ── settle the books for the market(s) just left (user 08/03):
+            # at 16:00 this reconciles the 15:45 market's pnl from fills.
+            if current_ticker:
+                _recon_pending.append((current_ticker, 0))
+            _still: list = []
+            for _tk, _tries in _recon_pending:
+                try:
+                    _done = await _reconcile_prev_market(c, _tk)
+                except Exception as _e:                       # noqa: BLE001
+                    print(f"  [TRUEPNL] {_tk}: reconcile crashed ({_e})")
+                    _done = True          # never let bookkeeping stall trading
+                if not _done and _tries + 1 < _RECON_MAX_TRIES:
+                    _still.append((_tk, _tries + 1))
+            _recon_pending = _still
             ticker        = market["ticker"]
             current_ticker = ticker
             market_opened = _market_opened(market)
@@ -962,13 +1087,25 @@ async def run() -> None:
                                   f"band wait (need > {MIN_TIME_TO_CLOSE_S}s) — "
                                   f"no order.")
                         else:
-                            # ── Sizing: always CONTRACTS_PV_PCT ──────────────
+                            # ── Sizing ───────────────────────────────────────
+                            # Fixed size wins when the desk asked for it (user
+                            # 08/03): the launcher expresses "N contracts" as
+                            # KALSHI_CONTRACTS=N + CONTRACTS_PV_PCT=0, which
+                            # this engine used to read as "0% of PV" and buy
+                            # the max(1,·) floor — 1 contract, whatever was
+                            # typed. %-of-PV sizing is unchanged otherwise.
                             _peek_dollars = planning_to_buy / 100.0
-                            _buy_contracts = max(1, math.ceil(
-                                (CONTRACTS_PV_PCT / 100.0 * pv) / _peek_dollars))
-                            print(f"  [SIZE] {CONTRACTS_PV_PCT}% of ${pv:.2f} ÷ "
-                                  f"{_peek_dollars:.2f} = {_buy_contracts} "
-                                  f"contracts  |  BUY_SCORE={last_buy_score:+d}")
+                            if CONTRACTS_PV_PCT <= 0 and v1.CONTRACTS > 0:
+                                _buy_contracts = v1.CONTRACTS
+                                print(f"  [SIZE] fixed {_buy_contracts} contracts "
+                                      f"(KALSHI_CONTRACTS; PV% sizing off)  |  "
+                                      f"BUY_SCORE={last_buy_score:+d}")
+                            else:
+                                _buy_contracts = max(1, math.ceil(
+                                    (CONTRACTS_PV_PCT / 100.0 * pv) / _peek_dollars))
+                                print(f"  [SIZE] {CONTRACTS_PV_PCT}% of ${pv:.2f} ÷ "
+                                      f"{_peek_dollars:.2f} = {_buy_contracts} "
+                                      f"contracts  |  BUY_SCORE={last_buy_score:+d}")
                             _ready = True
 
                 if not _ready:

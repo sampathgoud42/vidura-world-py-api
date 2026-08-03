@@ -750,11 +750,20 @@ async def run() -> None:
                     await asyncio.sleep(3)
                     continue
 
-                # ── Sizing (CONTRACTS_PV_PCT) ────────────────────────────────
+                # ── Sizing ──────────────────────────────────────────────────
+                # Fixed size wins when the desk asked for it (user 08/03): the
+                # launcher expresses "N contracts" as KALSHI_CONTRACTS=N +
+                # CONTRACTS_PV_PCT=0, which this engine used to read as "0% of
+                # PV" and buy the max(1,·) floor regardless of what was typed.
                 _peek = planning_to_buy / 100.0
-                _buy_contracts = max(1, math.ceil((CONTRACTS_PV_PCT / 100.0 * pv) / _peek))
-                print(f"  [SIZE] {CONTRACTS_PV_PCT}% of ${pv:.2f} ÷ {_peek:.2f} "
-                      f"= {_buy_contracts} contracts")
+                if CONTRACTS_PV_PCT <= 0 and v1.CONTRACTS > 0:
+                    _buy_contracts = v1.CONTRACTS
+                    print(f"  [SIZE] fixed {_buy_contracts} contracts "
+                          f"(KALSHI_CONTRACTS; PV% sizing off)")
+                else:
+                    _buy_contracts = max(1, math.ceil((CONTRACTS_PV_PCT / 100.0 * pv) / _peek))
+                    print(f"  [SIZE] {CONTRACTS_PV_PCT}% of ${pv:.2f} ÷ {_peek:.2f} "
+                          f"= {_buy_contracts} contracts")
 
                 # ── Place buy immediately, wait for fill ─────────────────────
                 resp = await place_buy(c, ticker, direction,
