@@ -114,6 +114,50 @@ BTC_TARGET_PCT = float(__import__("os").getenv("BTC60_TARGET_PCT", "0") or 0)
 # Bank stop-loss (user 08/03): the capital-protection mirror of the target.
 BANK_SL_PCT    = float(__import__("os").getenv("BTC60_BANK_SL_PCT", "0") or 0)
 
+# ── NO-TRADE windows (user 08/03): quiet hours in HALT_TIMEZONE local time.
+# The bot STAYS RUNNING (signals, monitors, TP management) but enters no NEW
+# trade while local time is inside any window. Format:
+#   NO_TRADE_TIMES="17:00-19:30,05:00-08:00"
+# end < start wraps midnight; an empty string disables the windows entirely.
+import datetime as _ntdt
+import os as _ntos
+import sys as _ntsys
+from zoneinfo import ZoneInfo as _NTZone
+
+_NT_DEFAULT = "17:00-19:30,05:00-08:00"
+_NT_TZ = _NTZone(_ntos.getenv("HALT_TIMEZONE", "America/Chicago"))
+
+
+def _nt_parse():
+    out = []
+    for part in (_ntos.getenv("NO_TRADE_TIMES", _NT_DEFAULT) or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            a, b = part.split("-", 1)
+            h1, m1 = a.strip().split(":")
+            h2, m2 = b.strip().split(":")
+            out.append((_ntdt.time(int(h1), int(m1)), _ntdt.time(int(h2), int(m2))))
+        except ValueError:
+            print(f"[NO-TRADE] unparsable window {part!r} - ignored",
+                  file=_ntsys.stderr)
+    return out
+
+
+NO_TRADE_WINDOWS = _nt_parse()
+_nt_announced = [False]
+
+
+def _in_no_trade_window(t=None):
+    """The window containing local time ``t`` (default: now), else None."""
+    t = t or _ntdt.datetime.now(_NT_TZ).time()
+    for s, e in NO_TRADE_WINDOWS:
+        if (s <= t <= e) if s <= e else (t >= s or t <= e):
+            return (s, e)
+    return None
+
+
 ENTRY_BID_LO     = 65       # favorite's bid band, cents      (learner: lo 65-72)
 ENTRY_BID_HI     = 80
 ENTRY_BID_SWEET  = 72       # prefer candidate bid closest to this
@@ -1290,6 +1334,19 @@ async def run_bot() -> None:
                 if spot is None or poc.color is None:
                     await asyncio.sleep(POLL_S)
                     continue
+
+                # ── NO-TRADE window (user 08/03): stay alive, enter
+                # nothing. Announced once per window, not every poll.
+                if _in_no_trade_window() is not None:
+                    if not _nt_announced[0]:
+                        _w = _in_no_trade_window()
+                        _log("NO-TRADE", f"local time inside "
+                                         f"{_w[0]:%H:%M}-{_w[1]:%H:%M} - no "
+                                         f"new entries until it ends")
+                        _nt_announced[0] = True
+                    await asyncio.sleep(POLL_S)
+                    continue
+                _nt_announced[0] = False
 
                 cand = await pick_candidate(c, event, spot, poc, learner.bid_lo, btc)
                 if cand is None:

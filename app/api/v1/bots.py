@@ -156,6 +156,7 @@ def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
         tp_pct=payload.tp_pct,
         sl_pct=payload.sl_pct,
         bank_sl_pct=payload.bank_sl_pct,
+        no_trade_times=payload.no_trade_times,
         bank=payload.bank,
         contracts=payload.contracts,
         kill_existing=payload.kill_existing,

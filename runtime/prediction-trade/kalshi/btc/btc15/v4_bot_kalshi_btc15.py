@@ -79,6 +79,50 @@ BTC15_TARGET_PCT = float(os.getenv("BTC15_TARGET_PCT", "0") or 0)
 # by this percent — the capital-protection mirror of the target above.
 BTC15_BANK_SL_PCT = float(os.getenv("BTC15_BANK_SL_PCT", "0") or 0)
 
+# ── NO-TRADE windows (user 08/03): quiet hours in HALT_TIMEZONE local time.
+# The bot STAYS RUNNING (signals, monitors, TP management) but enters no NEW
+# trade while local time is inside any window. Format:
+#   NO_TRADE_TIMES="17:00-19:30,05:00-08:00"
+# end < start wraps midnight; an empty string disables the windows entirely.
+import datetime as _ntdt
+import os as _ntos
+import sys as _ntsys
+from zoneinfo import ZoneInfo as _NTZone
+
+_NT_DEFAULT = "17:00-19:30,05:00-08:00"
+_NT_TZ = _NTZone(_ntos.getenv("HALT_TIMEZONE", "America/Chicago"))
+
+
+def _nt_parse():
+    out = []
+    for part in (_ntos.getenv("NO_TRADE_TIMES", _NT_DEFAULT) or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            a, b = part.split("-", 1)
+            h1, m1 = a.strip().split(":")
+            h2, m2 = b.strip().split(":")
+            out.append((_ntdt.time(int(h1), int(m1)), _ntdt.time(int(h2), int(m2))))
+        except ValueError:
+            print(f"[NO-TRADE] unparsable window {part!r} - ignored",
+                  file=_ntsys.stderr)
+    return out
+
+
+NO_TRADE_WINDOWS = _nt_parse()
+_nt_announced = [False]
+
+
+def _in_no_trade_window(t=None):
+    """The window containing local time ``t`` (default: now), else None."""
+    t = t or _ntdt.datetime.now(_NT_TZ).time()
+    for s, e in NO_TRADE_WINDOWS:
+        if (s <= t <= e) if s <= e else (t >= s or t <= e):
+            return (s, e)
+    return None
+
+
 # Profit-ratchet for the MIN-PV floor above.  On every WINNING trade the floor
 # ratchets UP (never down) to:  max(floor, pv_after - PORTFOLIO_FLOOR_BUFFER),
 # locking in realised gains.  PORTFOLIO_FLOOR_BUFFER is the fixed $ risk budget
@@ -2330,6 +2374,15 @@ async def run() -> None:
                           f"btc.strength_history (last 20 ticks); refusing "
                           f"to buy {direction.upper()}. Skipping slot.")
                     await asyncio.sleep(5)
+                    continue
+
+                # ── NO-TRADE window (user 08/03): stay alive, enter nothing.
+                _ntw = _in_no_trade_window()
+                if _ntw is not None:
+                    print(f"  [NO-TRADE] local time inside "
+                          f"{_ntw[0]:%H:%M}-{_ntw[1]:%H:%M} - skipping this "
+                          f"slot; monitoring only")
+                    await asyncio.sleep(60)
                     continue
 
                 planning_to_buy = int(round(_peek * 100))

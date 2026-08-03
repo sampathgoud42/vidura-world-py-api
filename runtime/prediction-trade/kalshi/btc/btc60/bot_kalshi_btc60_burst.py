@@ -52,6 +52,50 @@ FIXED_CONTRACTS    = int(__import__("os").getenv("KALSHI_CONTRACTS", "1") or 1)
 BURST_TARGET_PCT   = float(__import__("os").getenv("BTC60_TARGET_PCT", "0") or 0)
 # ... or SHRUNK by this percent: the capital-protection mirror (user 08/03).
 BURST_BANK_SL_PCT  = float(__import__("os").getenv("BTC60_BANK_SL_PCT", "0") or 0)
+
+# ── NO-TRADE windows (user 08/03): quiet hours in HALT_TIMEZONE local time.
+# The bot STAYS RUNNING (signals, monitors, TP management) but enters no NEW
+# trade while local time is inside any window. Format:
+#   NO_TRADE_TIMES="17:00-19:30,05:00-08:00"
+# end < start wraps midnight; an empty string disables the windows entirely.
+import datetime as _ntdt
+import os as _ntos
+import sys as _ntsys
+from zoneinfo import ZoneInfo as _NTZone
+
+_NT_DEFAULT = "17:00-19:30,05:00-08:00"
+_NT_TZ = _NTZone(_ntos.getenv("HALT_TIMEZONE", "America/Chicago"))
+
+
+def _nt_parse():
+    out = []
+    for part in (_ntos.getenv("NO_TRADE_TIMES", _NT_DEFAULT) or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            a, b = part.split("-", 1)
+            h1, m1 = a.strip().split(":")
+            h2, m2 = b.strip().split(":")
+            out.append((_ntdt.time(int(h1), int(m1)), _ntdt.time(int(h2), int(m2))))
+        except ValueError:
+            print(f"[NO-TRADE] unparsable window {part!r} - ignored",
+                  file=_ntsys.stderr)
+    return out
+
+
+NO_TRADE_WINDOWS = _nt_parse()
+_nt_announced = [False]
+
+
+def _in_no_trade_window(t=None):
+    """The window containing local time ``t`` (default: now), else None."""
+    t = t or _ntdt.datetime.now(_NT_TZ).time()
+    for s, e in NO_TRADE_WINDOWS:
+        if (s <= t <= e) if s <= e else (t >= s or t <= e):
+            return (s, e)
+    return None
+
 TP_CENTS           = 20      # take-profit offset
 # Per-trade profit target as a PERCENT over entry (user 07/30). When set it
 # replaces the flat +20c offset, which is a very different trade from a 30c
@@ -860,6 +904,16 @@ async def run_bot() -> int | None:
                     _log("GATE", f"account cash ${cash:.2f} can't fund 1 "
                                  f"contract"); _consume(); continue
                 cost = contracts * bid / 100
+
+            # ── NO-TRADE window (user 08/03): the signal is CONSUMED, not
+            # deferred — trading it after the window would act on a stale bar.
+            _ntw = _in_no_trade_window()
+            if _ntw is not None:
+                _consume()
+                _log("NO-TRADE", f"local time inside "
+                                 f"{_ntw[0]:%H:%M}-{_ntw[1]:%H:%M} - "
+                                 f"{signal_name} consumed, no entry")
+                continue
 
             # committing to the trade — mark the signal consumed now so a
             # crash mid-trade can't re-fire the same bar on restart

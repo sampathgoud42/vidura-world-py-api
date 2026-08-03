@@ -161,6 +161,10 @@ def _bankroll_env(env: dict[str, str], options: "BotStartOptions") -> None:
         # the capital-protection mirror of the target (user 08/03)
         env["BTC15_BANK_SL_PCT"] = f"{options.bank_sl_pct:g}"
         env["BTC60_BANK_SL_PCT"] = f"{options.bank_sl_pct:g}"
+    if options.no_trade_times is not None:
+        # quiet hours; an explicit empty string DISABLES the engines' default
+        # windows, so None (not sent) and "" (cleared) mean different things
+        env["NO_TRADE_TIMES"] = options.no_trade_times
 
 
 # Knobs worth showing on the desk while a bot runs. Credentials and paths are
@@ -171,7 +175,7 @@ _SHOWN_ENV = (
     "DO_YOU_HAVE_STOP_SELL", "MONITOR_SL_TRIGGER",
     "KALSHI_CONTRACTS", "MAX_TRADES_PER_MARKET",
     "BTC_BANKROLL", "BTC15_TARGET_PCT", "BTC60_TARGET_PCT",
-    "BTC15_BANK_SL_PCT", "BTC60_BANK_SL_PCT",
+    "BTC15_BANK_SL_PCT", "BTC60_BANK_SL_PCT", "NO_TRADE_TIMES",
     "TARGET_PORTFOLIO_PCT", "DO_NOT_BUY_IF_PORTFOLIO_BELOW",
     "HALT_MACHINE_SHUTDOWN", "PAPER_TRADING",
 )
@@ -252,7 +256,7 @@ class BotStartOptions:
     def __init__(
         self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
         contracts=None, kill_existing: bool = False, tp_pct=None, sl_pct=None,
-        bank=None, bank_sl_pct=None,
+        bank=None, bank_sl_pct=None, no_trade_times=None,
     ):
         self.mode = mode
         self.sports = sports
@@ -261,6 +265,7 @@ class BotStartOptions:
         self.tp_pct = tp_pct
         self.sl_pct = sl_pct
         self.bank_sl_pct = bank_sl_pct
+        self.no_trade_times = no_trade_times
         self.bank = bank
         self.contracts = contracts
         self.kill_existing = kill_existing
@@ -543,6 +548,7 @@ def start_bot(
             "sl_pct": options.sl_pct,
             "bank": options.bank,
             "bank_sl_pct": options.bank_sl_pct,
+            "no_trade_times": options.no_trade_times,
             "contracts": options.contracts,
             "target_pct": options.target_pct,
             "env": {k: env[k] for k in _SHOWN_ENV if k in env},

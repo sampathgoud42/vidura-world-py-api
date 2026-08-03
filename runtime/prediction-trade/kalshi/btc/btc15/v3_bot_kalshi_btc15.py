@@ -665,6 +665,13 @@ async def run() -> None:
                 return
 
             for trade_no in range(1, MAX_TRADES_PER_MARKET + 1):
+                # ── NO-TRADE window (user 08/03): stay alive, enter nothing.
+                _ntw = v1._in_no_trade_window()
+                if _ntw is not None:
+                    print(f"  [NO-TRADE] local time inside "
+                          f"{_ntw[0]:%H:%M}-{_ntw[1]:%H:%M} - no entries this "
+                          f"market; monitoring only")
+                    break
                 # Order-window time gate.
                 _ttc = (market_close - _utc_now()).total_seconds()
                 if _ttc <= MIN_TIME_TO_CLOSE_S:

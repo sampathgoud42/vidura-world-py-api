@@ -79,6 +79,50 @@ SERIES            = "KXBTC15M"
 
 DRY_RUN     = os.getenv("BOT152_DRY_RUN", "TRUE").upper() == "TRUE"
 CONTRACTS   = int(os.getenv("BOT152_CONTRACTS", "1"))
+
+# ── NO-TRADE windows (user 08/03): quiet hours in HALT_TIMEZONE local time.
+# The bot STAYS RUNNING (signals, monitors, TP management) but enters no NEW
+# trade while local time is inside any window. Format:
+#   NO_TRADE_TIMES="17:00-19:30,05:00-08:00"
+# end < start wraps midnight; an empty string disables the windows entirely.
+import datetime as _ntdt
+import os as _ntos
+import sys as _ntsys
+from zoneinfo import ZoneInfo as _NTZone
+
+_NT_DEFAULT = "17:00-19:30,05:00-08:00"
+_NT_TZ = _NTZone(_ntos.getenv("HALT_TIMEZONE", "America/Chicago"))
+
+
+def _nt_parse():
+    out = []
+    for part in (_ntos.getenv("NO_TRADE_TIMES", _NT_DEFAULT) or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            a, b = part.split("-", 1)
+            h1, m1 = a.strip().split(":")
+            h2, m2 = b.strip().split(":")
+            out.append((_ntdt.time(int(h1), int(m1)), _ntdt.time(int(h2), int(m2))))
+        except ValueError:
+            print(f"[NO-TRADE] unparsable window {part!r} - ignored",
+                  file=_ntsys.stderr)
+    return out
+
+
+NO_TRADE_WINDOWS = _nt_parse()
+_nt_announced = [False]
+
+
+def _in_no_trade_window(t=None):
+    """The window containing local time ``t`` (default: now), else None."""
+    t = t or _ntdt.datetime.now(_NT_TZ).time()
+    for s, e in NO_TRADE_WINDOWS:
+        if (s <= t <= e) if s <= e else (t >= s or t <= e):
+            return (s, e)
+    return None
+
 # STRICT entry price band: buy only while the signal side's ask is inside
 # [MIN_CENTS, MAX_CENTS]; the limit order is placed at MAX_CENTS.
 MIN_CENTS   = int(os.getenv("BOT152_MIN_CENTS", "35"))
@@ -660,6 +704,14 @@ async def handle_market(c: KalshiClient, m: dict, st: dict) -> None:
             f"{band_deadline:%H:%M:%S} — skipping")
         return
     log(f"[BAND] {ticker}: {side.upper()} ask {ask}¢ IN RANGE — buying @ {band_hi}¢ limit")
+
+    # ── NO-TRADE window (user 08/03): stay alive, enter nothing. Checked at
+    # ORDER time — the band wait above can carry the flow into a window.
+    _ntw = _in_no_trade_window()
+    if _ntw is not None:
+        log(f"[NO-TRADE] {ticker}: local time inside "
+            f"{_ntw[0]:%H:%M}-{_ntw[1]:%H:%M} - not buying")
+        return
 
     resp = await place_buy(c, ticker, side, band_hi)
     log_trade(ticker, mark, row, side, resp, pm, pmm, ask, price=band_hi)

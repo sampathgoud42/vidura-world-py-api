@@ -92,6 +92,19 @@ class BotStartRequest(BaseModel):
         ),
         examples=[20],
     )
+    no_trade_times: str | None = Field(
+        default=None, max_length=200,
+        pattern=r"^$|^\s*\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}"
+                r"(\s*,\s*\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2})*\s*$",
+        description=(
+            "Quiet hours in HALT_TIMEZONE local time, comma-separated "
+            "HH:MM-HH:MM ranges (end before start wraps midnight). The bot "
+            "stays RUNNING — monitors and TP management continue — but enters "
+            "no NEW trade inside a window. Engines default to "
+            "'17:00-19:30,05:00-08:00'; send an empty string to disable."
+        ),
+        examples=["17:00-19:30, 05:00-08:00"],
+    )
     bank: float | None = Field(
         default=None, gt=0, le=1_000_000,
         description=(
