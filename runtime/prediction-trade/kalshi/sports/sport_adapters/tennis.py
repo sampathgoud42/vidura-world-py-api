@@ -63,6 +63,15 @@ except ImportError as _exc:                                     # pragma: no cov
 TENNIS_FIRESELL_EXITS = os.getenv("TENNIS_FIRESELL_EXITS",
                                   "FALSE").strip().upper() == "TRUE"
 
+# v1 wrong-side band (user 08/02): under the v1 model, holding the
+# NON-favorite while a favorite IS determined is a thesis violation, not a
+# position to ride — sell at +15% profit or 15% loss from entry, never hold
+# to settlement. Applies ONLY when TENNIS_MODEL=v1; the later models have
+# their own validated exit policies and this must not leak into them.
+TENNIS_V1_WRONGSIDE_EXIT = os.getenv("TENNIS_V1_WRONGSIDE_EXIT",
+                                     "TRUE").strip().upper() == "TRUE"
+TENNIS_V1_WRONGSIDE_PCT = float(os.getenv("TENNIS_V1_WRONGSIDE_PCT", "15") or 15)
+
 # MODEL SWITCH (user 07/16): the MAIN bot runs predict_v5 by default (see
 # module doc). tv1 imported its model symbols from predict_v3 at module load,
 # so rebind them here — this affects ONLY this process; the standalone v1 bot
@@ -261,9 +270,74 @@ class TennisAdapter(SportAdapter):
             return None
         return self.cfg.tp_ceiling_c
 
+    async def _v1_wrongside_band(self, client, ticker, entry_c,
+                                 held_bid_c) -> tuple:
+        """v1 only: exit a held NON-favorite at ±15% from entry.
+
+        Cheap price gate first — the favorite lookup (score + odds + rankings)
+        costs several API calls, so it runs only once the bid has actually
+        left the band. The thresholds are computed as entry*(100±pct)/100, not
+        entry*1.15: 1.15 is not exactly representable and 40*1.15 lands at
+        46.000000000000004, which would refuse to fire on a bid of exactly 46.
+        """
+        if not entry_c or held_bid_c is None or held_bid_c <= 0:
+            return False, ""
+        tp = entry_c * (100 + TENNIS_V1_WRONGSIDE_PCT) / 100.0
+        sl = entry_c * (100 - TENNIS_V1_WRONGSIDE_PCT) / 100.0
+        if sl < held_bid_c < tp:
+            return False, ""
+        if not tv1._HAS_PREDICT:
+            return False, ""       # no model machinery -> cannot name a favorite
+        try:
+            sc = await tv1.get_kalshi_tennis_score(client, ticker)
+        except Exception:
+            return False, ""
+        players = (sc or {}).get("players") or []
+        if len(players) < 2:
+            return False, ""
+        for pl in players:
+            rk = tv1.rank_for(pl.get("name", ""), self.rankings)
+            pl["rank"] = rk if rk is not None else None
+            pl["rank_tour"] = tv1.tour_for(pl.get("name", ""), self.rank_tours)
+        pm = await tv1._player_markets(client, ticker)
+        held_name = {mt: nm for nm, mt in pm.items()}.get(ticker)
+        if held_name is None:
+            return False, ""
+        try:
+            _live, og = await tv1.get_player_odds(client, ticker,
+                                                  sc.get("match_start"))
+        except Exception:
+            og = {}
+        fav = tv1.determine_favorite(
+            (players[0].get("name", ""), players[1].get("name", "")), og,
+            (players[0].get("rank"), players[1].get("rank")),
+            rank_tours=(players[0].get("rank_tour"), players[1].get("rank_tour")))
+        if fav is None:
+            return False, ""       # no favorite determined -> the rule's premise fails
+        fav_name = players[0]["name"] if fav == "A" else players[1]["name"]
+        if held_name == fav_name:
+            return False, ""       # holding the favorite -> ride, per the model
+        pct = (held_bid_c - entry_c) / entry_c * 100.0
+        edge = "locking the profit" if held_bid_c >= tp else "cutting the loss"
+        return True, (
+            f"v1 wrong-side band: holding non-favorite {held_name} against "
+            f"favorite {fav_name}, bid {held_bid_c}c vs entry {entry_c}c "
+            f"({pct:+.1f}%, band ±{TENNIS_V1_WRONGSIDE_PCT:g}%) — {edge}, not holding"
+        )
+
     # ── sport-specific exits (v3 rules, adapted from the v1 guardian) ────────
     async def exit_check(self, client, ticker, entry_c, held_bid_c, side,
                          position) -> tuple:
+        # Deliberately BEFORE the TENNIS_FIRESELL_EXITS gate below: that flag
+        # (default FALSE) switches off the v3 favorite exits, but the v1
+        # wrong-side band is v1's own contract — "do not hold" — and must
+        # survive the default configuration.
+        if TENNIS_V1_WRONGSIDE_EXIT and TENNIS_MODEL == "v1":
+            hit, why = await self._v1_wrongside_band(client, ticker,
+                                                     entry_c, held_bid_c)
+            if hit:
+                return True, why, False
+
         # v4 (user 07/13): tennis firesells removed — only the engine's 97c/7c
         # price bands exit a held tennis position. Restore with TENNIS_FIRESELL_EXITS=TRUE.
         if not TENNIS_FIRESELL_EXITS:
