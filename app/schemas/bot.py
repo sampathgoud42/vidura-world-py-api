@@ -130,6 +130,10 @@ class BotStatusOut(BaseModel):
     bot_key: str
     running: bool
     runs: list[BotRunOut]
+    # Realized bankroll progress of the ACTIVE run: trades it opened and has
+    # since closed, as % of the bank typed at launch, vs its target_pct.
+    # None when idle or when the run predates config recording.
+    session: dict | None = None
 
 
 class BotLogsOut(BaseModel):

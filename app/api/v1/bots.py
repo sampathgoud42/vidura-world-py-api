@@ -134,10 +134,14 @@ def get_bots(db: Session = Depends(get_db)) -> list[BotInfo]:
 
 def _status(db: Session, bot_key: str, user_id: str | None) -> BotStatusOut:
     runs = bot_manager.reconcile_runs(db, bot_key=bot_key, user_id=user_id)
+    active = next((r for r in runs if r.status == "running"), None)
     return BotStatusOut(
         bot_key=bot_key,
-        running=any(r.status == "running" for r in runs),
+        running=active is not None,
         runs=[BotRunOut.model_validate(r) for r in runs[:20]],
+        # rides the status poll the pages already make, so the chip updates on
+        # the same cadence as everything else and costs no extra request
+        session=trades_svc.session_progress(db, active),
     )
 
 

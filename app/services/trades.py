@@ -73,6 +73,53 @@ def active_trades(db: Session, *, user_id: str | None = None, bot_key: str | Non
     return list(db.scalars(stmt.order_by(Trade.opened_at.desc())).all())
 
 
+def session_progress(db: Session, run) -> dict | None:
+    """Realized bankroll progress for one RUNNING bot session.
+
+    Sums the P&L of trades this run opened and has since closed, and expresses
+    it against the bankroll typed at launch: "+0.2% of a $50 bank, target 50%".
+
+    Scoped three ways, each protecting the number from a specific lie:
+      - opened_at >= run.started_at — an earlier session's trades are not this
+        session's progress;
+      - settled statuses only — an open position has no realized P&L yet, and
+        the user asked for progress AFTER each close;
+      - is_live must match the run's mode — a paper run's wins must not count
+        toward a live bankroll target, and rows whose mode is unknown count
+        toward neither.
+
+    The bankroll is the recorded launch config, not the live account balance:
+    the account is shared across bots, so only the typed bank makes the
+    percentage mean "this bot, this session".
+    """
+    if run is None or run.status != "running":
+        return None
+    extra = run.extra or {}
+    bank = extra.get("bank")
+    if bank is None and extra.get("sport_settings"):
+        # sports records per-sport banks; the session bankroll is their sum
+        banks = [v.get("bank") for v in extra["sport_settings"].values() if v.get("bank")]
+        bank = round(sum(banks), 2) if banks else None
+
+    want_live = run.mode == "live"
+    stmt = select(Trade).where(
+        Trade.user_id == run.user_id,
+        Trade.bot_key == run.bot_key,
+        Trade.opened_at >= run.started_at,
+        Trade.status.in_(tuple(SETTLED_STATUSES)),
+        Trade.is_live.is_(want_live),
+    )
+    rows = list(db.scalars(stmt).all())
+    pnl = round(sum(r.pnl_usd or 0.0 for r in rows), 2)
+    return {
+        "trades_closed": len(rows),
+        "pnl_usd": pnl,
+        "bank": bank,
+        "bankroll_pct": round(pnl / bank * 100, 2) if bank else None,
+        "target_pct": extra.get("target_pct"),
+    }
+
+
 def performance(
     db: Session, *, user_id: str | None = None, bot_key: str | None = None,
     days: int | None = None, mode: str = "live",
