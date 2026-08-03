@@ -271,6 +271,24 @@ def _map_row(tag: str, row: dict) -> dict | None:
     return None
 
 
+def _classify_btc15_modes(db: Session) -> int:
+    """Run-window mode classification, at SYNC time rather than only at boot.
+
+    btc15 v2/v3/v4 write paper and live rows to one CSV with no dry_run
+    field, so they ingest with is_live NULL — and the LIVE ledger view hides
+    NULL by design. The boot backfill classified them from bot_run windows,
+    but rows ingested while the API stays up sat unclassified until the next
+    restart: a whole day of live trades invisible in the default view.
+    """
+    from app.core.database import _backfill_btc15_modes
+
+    fixed = _backfill_btc15_modes(db.connection())
+    if fixed:
+        db.commit()
+        logger.info("classified %s btc15 row(s) from their run windows", fixed)
+    return fixed
+
+
 def sync_trades(db: Session, user: User, bot_key: str) -> dict:
     """Idempotent CSV -> SQLite sync. Returns counts per file."""
     report: dict[str, dict] = {}
@@ -335,6 +353,8 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
         inserted += file_ins
         updated += file_upd
         report[str(path)] = {"rows": len(rows), "inserted": file_ins, "updated": file_upd}
+    if bot_key == "btc15":
+        _classify_btc15_modes(db)
     return {"bot_key": bot_key, "inserted": inserted, "updated": updated, "files": report}
 
 
