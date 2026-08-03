@@ -81,6 +81,17 @@ class BotStartRequest(BaseModel):
         ),
         examples=[30],
     )
+    bank_sl_pct: float | None = Field(
+        default=None, gt=0, lt=100,
+        description=(
+            "Bank STOP-LOSS, % below the bank typed at launch — the "
+            "capital-protection mirror of target_pct. bank=100, target_pct=50, "
+            "bank_sl_pct=20: the bot stops at 150 (TP reached on bank) or at "
+            "80 (SL HIT on Bank). Routed to BTC15_BANK_SL_PCT / "
+            "BTC60_BANK_SL_PCT."
+        ),
+        examples=[20],
+    )
     bank: float | None = Field(
         default=None, gt=0, le=1_000_000,
         description=(

@@ -157,6 +157,10 @@ def _bankroll_env(env: dict[str, str], options: "BotStartOptions") -> None:
         # process, so the two never collide
         env["BTC15_TARGET_PCT"] = f"{options.target_pct:g}"
         env["BTC60_TARGET_PCT"] = f"{options.target_pct:g}"
+    if options.bank_sl_pct is not None:
+        # the capital-protection mirror of the target (user 08/03)
+        env["BTC15_BANK_SL_PCT"] = f"{options.bank_sl_pct:g}"
+        env["BTC60_BANK_SL_PCT"] = f"{options.bank_sl_pct:g}"
 
 
 # Knobs worth showing on the desk while a bot runs. Credentials and paths are
@@ -166,7 +170,9 @@ _SHOWN_ENV = (
     "KALSHI_STOP_PCT", "BTC60_SL_PCT",
     "DO_YOU_HAVE_STOP_SELL", "MONITOR_SL_TRIGGER",
     "KALSHI_CONTRACTS", "MAX_TRADES_PER_MARKET",
-    "BTC_BANKROLL", "TARGET_PORTFOLIO_PCT", "DO_NOT_BUY_IF_PORTFOLIO_BELOW",
+    "BTC_BANKROLL", "BTC15_TARGET_PCT", "BTC60_TARGET_PCT",
+    "BTC15_BANK_SL_PCT", "BTC60_BANK_SL_PCT",
+    "TARGET_PORTFOLIO_PCT", "DO_NOT_BUY_IF_PORTFOLIO_BELOW",
     "HALT_MACHINE_SHUTDOWN", "PAPER_TRADING",
 )
 
@@ -246,7 +252,7 @@ class BotStartOptions:
     def __init__(
         self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
         contracts=None, kill_existing: bool = False, tp_pct=None, sl_pct=None,
-        bank=None,
+        bank=None, bank_sl_pct=None,
     ):
         self.mode = mode
         self.sports = sports
@@ -254,6 +260,7 @@ class BotStartOptions:
         self.target_pct = target_pct
         self.tp_pct = tp_pct
         self.sl_pct = sl_pct
+        self.bank_sl_pct = bank_sl_pct
         self.bank = bank
         self.contracts = contracts
         self.kill_existing = kill_existing
@@ -299,9 +306,10 @@ def _launch_plan(
         env.setdefault("BOT_LOG_DIR", str(log_dir))
         env.setdefault("BOT152_CSV_PATH", str(trade_dir / "bot_btc_15_2_trades.csv"))
         if options.contracts:
-            # fixed size instead of the %-of-portfolio sizing
+            # common bot contract: contracts is a FIXED size everywhere —
+            # every %-of-PV sizing path was removed from the engines (08/03),
+            # so there is no CONTRACTS_PV_PCT to zero out any more
             env["KALSHI_CONTRACTS"] = str(options.contracts)
-            env["CONTRACTS_PV_PCT"] = "0"
             env["BOT152_CONTRACTS"] = str(options.contracts)
     elif spec.launch_style == "env_customer":
         # btc60 family: resolves paths from __file__, customer via env.
@@ -534,6 +542,7 @@ def start_bot(
             "tp_pct": options.tp_pct,
             "sl_pct": options.sl_pct,
             "bank": options.bank,
+            "bank_sl_pct": options.bank_sl_pct,
             "contracts": options.contracts,
             "target_pct": options.target_pct,
             "env": {k: env[k] for k in _SHOWN_ENV if k in env},

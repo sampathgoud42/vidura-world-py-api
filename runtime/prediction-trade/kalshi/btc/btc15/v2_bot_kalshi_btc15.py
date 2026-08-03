@@ -969,6 +969,27 @@ async def run() -> None:
             print(f"\n{'═' * 64}\n  MARKET : {ticker}"
                   f"   (up to {MAX_TRADES_PER_MARKET} trade(s))\n{'═' * 64}")
 
+            # ── BANK-TARGET (common bot contract, user 08/03): stop once
+            # realized P&L has grown THIS bot's bankroll by the target
+            # percent. Checked at market start, where the position is flat —
+            # stopping mid-market would strand an open position.
+            if v1.BANKROLL.target_reached():
+                await _halt_and_shutdown(
+                    c, ticker, reason_tag="BANK-TARGET HALT",
+                    reason_msg=(f"TP reached on bank: ${v1.BANKROLL.balance:.2f} "
+                                f"= +{v1.BTC15_TARGET_PCT:.0f}% on "
+                                f"${v1.BANKROLL.start:.2f} — stopping."),
+                )
+                return
+            if v1.BANKROLL.sl_reached():
+                await _halt_and_shutdown(
+                    c, ticker, reason_tag="BANK-SL HALT",
+                    reason_msg=(f"SL HIT on Bank: ${v1.BANKROLL.balance:.2f} "
+                                f"<= -{v1.BTC15_BANK_SL_PCT:.0f}% on "
+                                f"${v1.BANKROLL.start:.2f} — stopping."),
+                )
+                return
+
             # ── Per-market halt: trading-hours (same logic as v1) ────────────
             _local_now = datetime.now(ZoneInfo(HALT_TIMEZONE))
             _win = _in_halt_window(_local_now.time())
@@ -1095,25 +1116,14 @@ async def run() -> None:
                                   f"band wait (need > {MIN_TIME_TO_CLOSE_S}s) — "
                                   f"no order.")
                         else:
-                            # ── Sizing ───────────────────────────────────────
-                            # Fixed size wins when the desk asked for it (user
-                            # 08/03): the launcher expresses "N contracts" as
-                            # KALSHI_CONTRACTS=N + CONTRACTS_PV_PCT=0, which
-                            # this engine used to read as "0% of PV" and buy
-                            # the max(1,·) floor — 1 contract, whatever was
-                            # typed. %-of-PV sizing is unchanged otherwise.
-                            _peek_dollars = planning_to_buy / 100.0
-                            if CONTRACTS_PV_PCT <= 0 and v1.CONTRACTS > 0:
-                                _buy_contracts = v1.CONTRACTS
-                                print(f"  [SIZE] fixed {_buy_contracts} contracts "
-                                      f"(KALSHI_CONTRACTS; PV% sizing off)  |  "
-                                      f"BUY_SCORE={last_buy_score:+d}")
-                            else:
-                                _buy_contracts = max(1, math.ceil(
-                                    (CONTRACTS_PV_PCT / 100.0 * pv) / _peek_dollars))
-                                print(f"  [SIZE] {CONTRACTS_PV_PCT}% of ${pv:.2f} ÷ "
-                                      f"{_peek_dollars:.2f} = {_buy_contracts} "
-                                      f"contracts  |  BUY_SCORE={last_buy_score:+d}")
+                            # ── Sizing: FIXED contracts (common bot contract,
+                            # user 08/03). %-of-PV sizing removed desk-wide:
+                            # the contracts the operator typed are the
+                            # contracts bought, every engine, every trade.
+                            _buy_contracts = max(1, v1.CONTRACTS)
+                            print(f"  [SIZE] fixed {_buy_contracts} contracts "
+                                  f"(KALSHI_CONTRACTS)  |  "
+                                  f"BUY_SCORE={last_buy_score:+d}")
                             _ready = True
 
                 if not _ready:

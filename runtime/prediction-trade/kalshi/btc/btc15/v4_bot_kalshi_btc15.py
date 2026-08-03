@@ -58,7 +58,7 @@ TIME_SEC_TO_ORDER     = int(os.getenv("TIME_SEC_TO_ORDER", "450"))
 # market doubles exposure to a single BTC move that has already gone against
 # the first entry, which is the opposite of diversification.
 MAX_TRADES_PER_MARKET = int(os.getenv("MAX_TRADES_PER_MARKET", "1"))
-RUNNER_CONTRACTS      = int(os.getenv("RUNNER_CONTRACTS", "1"))
+RUNNER_CONTRACTS      = int(os.getenv("RUNNER_CONTRACTS", "0"))
 
 # Account-PV floor. DISABLED by default (user 07/30): the Kalshi account is
 # shared with the sports/btc60/perp bots, so a floor on its joint value let one
@@ -75,6 +75,9 @@ DO_NOT_BUY_IF_PORTFOLIO_BELOW = int(os.getenv("DO_NOT_BUY_IF_PORTFOLIO_BELOW", "
 # traded.
 BTC15_BANKROLL   = float(os.getenv("BTC_BANKROLL", "0") or 0)
 BTC15_TARGET_PCT = float(os.getenv("BTC15_TARGET_PCT", "0") or 0)
+# Bank stop-loss (user 08/03): stop once realized P&L has SHRUNK the bankroll
+# by this percent — the capital-protection mirror of the target above.
+BTC15_BANK_SL_PCT = float(os.getenv("BTC15_BANK_SL_PCT", "0") or 0)
 
 # Profit-ratchet for the MIN-PV floor above.  On every WINNING trade the floor
 # ratchets UP (never down) to:  max(floor, pv_after - PORTFOLIO_FLOOR_BUFFER),
@@ -205,7 +208,7 @@ def _collect_halt_windows() -> list[tuple[_time, _time]]:
             print(f"[HALT] Ignoring bad HALT_*_TIME{n}: {ex}")
 
     if not out:
-        out.append((_time(6, 15), _time(10, 45)))
+        out.append((_time(6, 15), _time(7, 45)))
     return out
 
 
@@ -410,6 +413,18 @@ class Bankroll:
         self.balance += float(pnl)
         self._save()
         print(f"  [BANK] {float(pnl):+.2f} → bankroll ${self.balance:.2f}")
+
+    def sl_reached(self) -> bool:
+        """True once realized P&L has SHRUNK this bot's bankroll by
+        BTC15_BANK_SL_PCT. No bankroll or no SL = never halts."""
+        if not self.enabled or BTC15_BANK_SL_PCT <= 0 or self.start <= 0:
+            return False
+        floor = self.start * (1 - BTC15_BANK_SL_PCT / 100.0)
+        if self.balance > floor:
+            return False
+        print(f"  [BANK-SL] bankroll ${self.balance:.2f} <= ${floor:.2f} "
+              f"(-{BTC15_BANK_SL_PCT:.0f}% on ${self.start:.2f}) — SL HIT on Bank")
+        return True
 
     def target_reached(self) -> bool:
         """True once realized P&L has grown THIS bot's bankroll by
@@ -1762,9 +1777,18 @@ async def run() -> None:
                     await _halt_and_shutdown(
                         c, ticker,
                         reason_tag="BANK-TARGET HALT",
-                        reason_msg=(f"bankroll ${BANKROLL.balance:.2f} reached "
-                                    f"+{BTC15_TARGET_PCT:.0f}% on "
-                                    f"${BANKROLL.start:.2f} — no new orders."),
+                        reason_msg=(f"TP reached on bank: ${BANKROLL.balance:.2f} "
+                                    f"= +{BTC15_TARGET_PCT:.0f}% on "
+                                    f"${BANKROLL.start:.2f} — stopping."),
+                    )
+                    return
+                if BANKROLL.sl_reached():
+                    await _halt_and_shutdown(
+                        c, ticker,
+                        reason_tag="BANK-SL HALT",
+                        reason_msg=(f"SL HIT on Bank: ${BANKROLL.balance:.2f} "
+                                    f"<= -{BTC15_BANK_SL_PCT:.0f}% on "
+                                    f"${BANKROLL.start:.2f} — stopping."),
                     )
                     return
                 if DO_NOT_BUY_IF_PORTFOLIO_BELOW > 0 and _floor_buffer is None:
@@ -2312,8 +2336,10 @@ async def run() -> None:
 
                 # Dynamic contract count for buy-only mode (no stop/sell)
                 #if not DO_YOU_HAVE_STOP_SELL:
-                _buy_contracts = max(1, math.ceil((CONTRACTS_PV_PCT / 100 * pv) / _peek))
-                print(f"  [BUY PLAN] NO-STOP mode: {CONTRACTS_PV_PCT}% of ${pv:.2f} "
+                # common bot contract (user 08/03): %-of-PV sizing removed;
+                # NO-STOP mode sizes like every other path — fixed CONTRACTS.
+                _buy_contracts = max(1, CONTRACTS)
+                print(f"  [BUY PLAN] NO-STOP mode: fixed {_buy_contracts} contracts "
                           f"÷ {_peek} = {_buy_contracts} contracts")
                 #else:
                 #    _buy_contracts = CONTRACTS

@@ -625,6 +625,24 @@ async def run() -> None:
     try:
         while True:
             market         = await wait_for_market(c, skip=current_ticker)
+            # ── BANK-TARGET (common bot contract, user 08/03): flat here, so
+            # stopping cannot strand a position.
+            if v1.BANKROLL.target_reached():
+                await _halt_and_shutdown(
+                    c, market["ticker"], reason_tag="BANK-TARGET HALT",
+                    reason_msg=(f"TP reached on bank: ${v1.BANKROLL.balance:.2f} "
+                                f"= +{v1.BTC15_TARGET_PCT:.0f}% on "
+                                f"${v1.BANKROLL.start:.2f} — stopping."),
+                )
+                return
+            if v1.BANKROLL.sl_reached():
+                await _halt_and_shutdown(
+                    c, market["ticker"], reason_tag="BANK-SL HALT",
+                    reason_msg=(f"SL HIT on Bank: ${v1.BANKROLL.balance:.2f} "
+                                f"<= -{v1.BTC15_BANK_SL_PCT:.0f}% on "
+                                f"${v1.BANKROLL.start:.2f} — stopping."),
+                )
+                return
             ticker         = market["ticker"]
             current_ticker = ticker
             market_opened  = _market_opened(market)
@@ -750,20 +768,11 @@ async def run() -> None:
                     await asyncio.sleep(3)
                     continue
 
-                # ── Sizing ──────────────────────────────────────────────────
-                # Fixed size wins when the desk asked for it (user 08/03): the
-                # launcher expresses "N contracts" as KALSHI_CONTRACTS=N +
-                # CONTRACTS_PV_PCT=0, which this engine used to read as "0% of
-                # PV" and buy the max(1,·) floor regardless of what was typed.
-                _peek = planning_to_buy / 100.0
-                if CONTRACTS_PV_PCT <= 0 and v1.CONTRACTS > 0:
-                    _buy_contracts = v1.CONTRACTS
-                    print(f"  [SIZE] fixed {_buy_contracts} contracts "
-                          f"(KALSHI_CONTRACTS; PV% sizing off)")
-                else:
-                    _buy_contracts = max(1, math.ceil((CONTRACTS_PV_PCT / 100.0 * pv) / _peek))
-                    print(f"  [SIZE] {CONTRACTS_PV_PCT}% of ${pv:.2f} ÷ {_peek:.2f} "
-                          f"= {_buy_contracts} contracts")
+                # ── Sizing: FIXED contracts (common bot contract, user
+                # 08/03). %-of-PV sizing removed desk-wide: the contracts the
+                # operator typed are the contracts bought.
+                _buy_contracts = max(1, v1.CONTRACTS)
+                print(f"  [SIZE] fixed {_buy_contracts} contracts (KALSHI_CONTRACTS)")
 
                 # ── Place buy immediately, wait for fill ─────────────────────
                 resp = await place_buy(c, ticker, direction,

@@ -41,11 +41,17 @@ FALSE for live.
 from __future__ import annotations
 
 # ── trading parameters ───────────────────────────────────────────────────────
-BANKROLL_SEED      = 100.0   # $ first-launch bankroll
+BANKROLL_SEED      = float(__import__("os").getenv("BTC_BANKROLL", "100") or 100)
+                             # $ first-launch bankroll (desk-injected)
 MAX_PV_PCT         = 25.0    # max % of bankroll per trade (owner's spec)
-FIXED_CONTRACTS    = 1       # owner 2026-07-13: trade a FIXED 1 contract on the
-                             # new research-signal source (cautious start). Set
-                             # to 0 to fall back to the MAX_PV_PCT % sizing.
+FIXED_CONTRACTS    = int(__import__("os").getenv("KALSHI_CONTRACTS", "1") or 1)
+                             # common bot contract (user 08/03): FIXED size on
+                             # every buy, desk-injected; the MAX_PV_PCT
+                             # fallback sizing is removed.
+# Stop once the bank (risked + banked) has grown by this percent on the seed.
+BURST_TARGET_PCT   = float(__import__("os").getenv("BTC60_TARGET_PCT", "0") or 0)
+# ... or SHRUNK by this percent: the capital-protection mirror (user 08/03).
+BURST_BANK_SL_PCT  = float(__import__("os").getenv("BTC60_BANK_SL_PCT", "0") or 0)
 TP_CENTS           = 20      # take-profit offset
 # Per-trade profit target as a PERCENT over entry (user 07/30). When set it
 # replaces the flat +20c offset, which is a very different trade from a 30c
@@ -751,6 +757,22 @@ async def run_bot() -> int | None:
                 _log("HALT", f"bankroll ${bank.bankroll:.2f} < "
                              f"${MIN_BANKROLL_HALT} — stopping")
                 return
+            # ── BANK-TARGET (common bot contract, user 08/03). Total equity
+            # = risked bankroll + skimmed profit: the 08:00 skim moves wins
+            # into `banked`, and a target that ignored it could never be hit.
+            if BURST_TARGET_PCT > 0 and (bank.bankroll + bank.banked) >= \
+                    BANKROLL_SEED * (1 + BURST_TARGET_PCT / 100.0):
+                _log("BANK-TARGET", f"TP reached on bank: ${bank.bankroll:.2f} + "
+                                    f"banked ${bank.banked:.2f} = "
+                                    f"+{BURST_TARGET_PCT:.0f}% on "
+                                    f"${BANKROLL_SEED:.2f} - stopping")
+                return
+            if BURST_BANK_SL_PCT > 0 and (bank.bankroll + bank.banked) <= \
+                    BANKROLL_SEED * (1 - BURST_BANK_SL_PCT / 100.0):
+                _log("BANK-SL", f"SL HIT on Bank: ${bank.bankroll:.2f} + banked "
+                                f"${bank.banked:.2f} <= -{BURST_BANK_SL_PCT:.0f}% "
+                                f"on ${BANKROLL_SEED:.2f} - stopping")
+                return
             if bank.day_loss_pct() >= DAILY_LOSS_HALT_PCT:
                 _log("HALT", f"daily loss {bank.day_loss_pct():.1f}% ≥ "
                              f"{DAILY_LOSS_HALT_PCT}% — idle until 08:00 reset")
@@ -827,13 +849,9 @@ async def run_bot() -> int | None:
                 _consume(); continue
             ticker, strike, bid = picked
 
-            if FIXED_CONTRACTS > 0:
-                contracts = FIXED_CONTRACTS          # cautious fixed size
-            else:
-                budget = MAX_PV_PCT / 100 * bank.bankroll
-                contracts = max(1, int(budget // (bid / 100)))
-                if contracts * bid / 100 > budget and contracts > 1:
-                    contracts -= 1
+            # common bot contract (user 08/03): always fixed — the %-of-
+            # bankroll fallback is removed, contracts means contracts
+            contracts = max(1, FIXED_CONTRACTS)
             cost = contracts * bid / 100
             cash = await account_cash(c)
             if cost > cash:

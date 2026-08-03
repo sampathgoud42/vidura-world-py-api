@@ -90,6 +90,10 @@ STOP_LOSS_PCT    = 30.0     # dump when bid <= entry * 0.70   (bounds 20-35)
 # explicit stop cannot silently drift. Unset (0) keeps the self-tuning.
 SL_PCT_OVERRIDE  = float(__import__("os").getenv("BTC60_SL_PCT", "0") or 0)
 PV_PCT_PER_TRADE = 10.0     # size each trade at 10% of the BTC BANKROLL (5-15)
+# Common bot contract (user 08/03): FIXED contracts on every buy; the
+# pv-percent sizing above is no longer used for order size (the learner
+# still tunes tp/sl/bid_lo). KALSHI_CONTRACTS is what the desk injects.
+FIXED_CONTRACTS  = int(__import__("os").getenv("KALSHI_CONTRACTS", "1") or 1)
 
 # The Kalshi account is SHARED with other bots (sports, perp, ...), so this
 # bot sizes and learns off its OWN bankroll ledger - never the account
@@ -107,6 +111,8 @@ BTC_BANKROLL_RESEED = bool(__import__("os").getenv("BTC_BANKROLL"))
 # portfolio value (user 07/30): halt new entries once realized P&L has grown
 # the bankroll by this %. 0 = run indefinitely.
 BTC_TARGET_PCT = float(__import__("os").getenv("BTC60_TARGET_PCT", "0") or 0)
+# Bank stop-loss (user 08/03): the capital-protection mirror of the target.
+BANK_SL_PCT    = float(__import__("os").getenv("BTC60_BANK_SL_PCT", "0") or 0)
 
 ENTRY_BID_LO     = 65       # favorite's bid band, cents      (learner: lo 65-72)
 ENTRY_BID_HI     = 80
@@ -1237,6 +1243,13 @@ async def run_bot() -> None:
                 # profit target on THIS bot's bankroll (not the shared account)
                 if learner.target_reached():
                     return
+                # bank stop-loss (user 08/03): protect the capital
+                if (BANK_SL_PCT > 0 and learner.start_bankroll
+                        and bank <= learner.start_bankroll * (1 - BANK_SL_PCT / 100.0)):
+                    _log("BANK-SL", f"SL HIT on Bank: ${bank:.2f} <= "
+                                    f"-{BANK_SL_PCT:.0f}% on "
+                                    f"${learner.start_bankroll:.2f} - stopping")
+                    return
                 if MIN_PORTFOLIO_HALT > 0 and bank < MIN_PORTFOLIO_HALT:
                     _log("HALT", f"BTC bankroll ${bank:.2f} < "
                                  f"${MIN_PORTFOLIO_HALT} - stopping "
@@ -1285,7 +1298,9 @@ async def run_bot() -> None:
                 ticker, side, strike, bid, net30 = cand
                 minute = (_utc_now() - hour_open).total_seconds() / 60
 
-                contracts = max(1, int((learner.pv_pct / 100 * bank) // (bid / 100)))
+                # common bot contract (user 08/03): fixed size, %-of-bankroll
+                # sizing removed — contracts means contracts
+                contracts = max(1, FIXED_CONTRACTS)
                 cost = contracts * bid / 100
                 # spend cap: never order more than the SHARED account can fund
                 cash = await account_cash(c)
