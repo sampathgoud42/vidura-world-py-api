@@ -908,6 +908,14 @@ async def _reconcile_prev_market(c, ticker: str) -> bool:
     os.replace(tmp, v1.CSV_FILE)
     print(f"  [TRUEPNL] {ticker}: pnl {old or '0'} -> {pnl:.2f} "
           f"({n_fills} fill(s) + settlement - exchange truth)")
+    # The bankroll ledger accrued the ESTIMATED pnl when the trade was logged
+    # (log_trade -> BANKROLL.settle). Settle only the CORRECTION, so the
+    # ledger sums to the exchange's number without counting the trade twice.
+    # Applied in the same pass that rewrites the row: the row-change test
+    # above is what makes this exactly-once across retries.
+    _delta = round(pnl - old_f, 2)
+    if _delta:
+        v1.BANKROLL.settle(_delta)
     return True
 
 
