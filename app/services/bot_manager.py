@@ -132,6 +132,14 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
         if cfg.model:
             # the vendored tennis adapter picks its predict_* module from this
             env[f"{prefix}_MODEL"] = cfg.model
+    if options.bank_sl_pct is not None:
+        # per-sport bank drawdown halt — the engine's own SportBook machinery
+        # (<SPORT>_STOP_LOSS_PCT): realized loss >= bank * pct/100 halts that
+        # sport's NEW buys while its open positions keep being managed. Per
+        # sport rather than whole-bot on purpose: one sport's drawdown must
+        # not stop the other sports mid-session.
+        for sport in (options.sports or KNOWN_SPORTS):
+            env[f"{sport.upper()}_STOP_LOSS_PCT"] = f"{options.bank_sl_pct:g}"
     if options.target_pct is not None:
         env["TARGET_PORTFOLIO_PCT"] = f"{options.target_pct:g}"
 
