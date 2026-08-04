@@ -108,3 +108,39 @@ def verify_password(user_root_folder: str, password: str) -> bool:
     if not ok:
         time.sleep(1.0)
     return ok
+
+
+def load_tradier_credentials(user_root_folder: str, *, sandbox: bool):
+    """Tradier token + account id from the user's .env.
+
+    Separate keys per environment on purpose — the sandbox is a different
+    venue with its own token, so a paper session physically cannot reach the
+    live account by a flag being misread:
+
+        TRADIER_SANDBOX_TOKEN / TRADIER_SANDBOX_ACCOUNT_ID   (paper)
+        TRADIER_ACCESS_TOKEN  / TRADIER_ACCOUNT_ID           (live)
+    """
+    from app.services.tradier_client import TradierCredentials
+
+    root = paths.normalize_root(user_root_folder)
+    if not root.is_dir():
+        raise CredentialsError(f"User root folder does not exist: {root}")
+    env_file = _find_env_file(root)
+    if env_file is None:
+        raise CredentialsError(f"No .env credentials file in {root}")
+    values = {k: v for k, v in dotenv_values(env_file).items() if v is not None}
+    if sandbox:
+        token = values.get("TRADIER_SANDBOX_TOKEN", "").strip()
+        account = values.get("TRADIER_SANDBOX_ACCOUNT_ID", "").strip()
+        which = "TRADIER_SANDBOX_TOKEN / TRADIER_SANDBOX_ACCOUNT_ID"
+    else:
+        token = values.get("TRADIER_ACCESS_TOKEN", "").strip()
+        account = values.get("TRADIER_ACCOUNT_ID", "").strip()
+        which = "TRADIER_ACCESS_TOKEN / TRADIER_ACCOUNT_ID"
+    if not token or not account:
+        raise CredentialsError(
+            f"{which} missing in {env_file.name} — add the "
+            f"{'sandbox' if sandbox else 'live'} Tradier keys to trade there"
+        )
+    return TradierCredentials(access_token=token, account_id=account,
+                              sandbox=sandbox)

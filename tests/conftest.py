@@ -25,6 +25,10 @@ os.environ.setdefault("VIDURA_FLASHALPHA_API_KEY", "test-key-not-real")
 # The earnings warm loop is keyless but still ~100 yfinance calls — tests must
 # stay offline and fast, so the sweep is always monkeypatched instead.
 os.environ.setdefault("VIDURA_EARNINGS_ENABLED", "false")
+# Hermetic: the Tradier SL monitor and Kalshi reconcile loops must never
+# run against test rows with real backoff timers.
+os.environ.setdefault("VIDURA_TRADIER_ENABLED", "false")
+os.environ.setdefault("VIDURA_RECONCILE_ENABLED", "false")
 
 import pytest
 from fastapi.testclient import TestClient

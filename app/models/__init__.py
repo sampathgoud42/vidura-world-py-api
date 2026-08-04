@@ -3,6 +3,7 @@ from app.models.prediction import TennisPrediction
 from app.models.super_research import (DailySnapshot, Gex0dteHour,
                                        PusherHeartbeat, SuperSignal)
 from app.models.trade import Trade
+from app.models.tradier import TradierPosition
 from app.models.user import User
 from app.models.wellness import WellnessEntry, WellnessProfile
 
@@ -14,6 +15,7 @@ __all__ = [
     "SuperSignal",
     "TennisPrediction",
     "Trade",
+    "TradierPosition",
     "User",
     "WellnessEntry",
     "WellnessProfile",

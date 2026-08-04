@@ -141,6 +141,29 @@ Each run records the config it was actually launched with in
 request, so a knob a given engine never received cannot appear as though it
 were in force. The desk renders it under the running engine.
 
+**Tradier options executor** — `GET /tradier/balance` (equity + option
+buying power), `GET /tradier/chain` (delta-band candidates and the pick,
+before any money moves), `POST /tradier/positions` (select by |delta| in
+`delta_min..delta_max` (default 0.25-0.50), size as `buy_pct`% of option
+buying power — `floor(budget / (ask x 100))`, the x100 being the contract
+multiplier — buy at the ask, then manage the exit), `GET /tradier/positions`,
+`POST /tradier/positions/sweep`, `POST /tradier/positions/{id}/close`.
+
+Exit contract: the take-profit (`tp_pct`, default 15) is a GTC limit sell
+resting ON the venue, so it survives API restarts; the stop-loss (`sl_pct`,
+default 30) is the API's 10-second monitor loop, which cancels the TP before
+selling — two sells must never stack — and whose state lives in the
+`tradier_positions` table so a restart resumes every watch. Exit prices are
+CEILED to the penny: `round(0.575, 2)` is 0.57 under banker's rounding, a TP
+that sells below its promised percent.
+
+Environments are separate venues, not a flag: `VIDURA_PAPER_ONLY=true` pins
+every client to `sandbox.tradier.com` using `TRADIER_SANDBOX_TOKEN` /
+`TRADIER_SANDBOX_ACCOUNT_ID` from the customer `.env`; live uses
+`TRADIER_ACCESS_TOKEN` / `TRADIER_ACCOUNT_ID` against `api.tradier.com` and
+only once the server is unlocked. Paper cannot reach live money by
+construction. The desk lives at `/tradier-platform` in the web app.
+
 **Tennis models** — `GET /models/tennis`,
 `GET/POST /models/tennis/{model_id}/predictions`.
 

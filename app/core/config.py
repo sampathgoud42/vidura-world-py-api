@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     # just still holding.
     reconcile_stale_hours: int = 24
 
+    # Tradier position monitor: sweeps managed options positions for buy
+    # fills, TP fills and SL breaches. The TP rests on the venue; the SL is
+    # THIS loop, so the interval is the SL's reaction time.
+    tradier_enabled: bool = True
+    tradier_monitor_interval_s: int = 10
+
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the

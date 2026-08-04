@@ -224,6 +224,58 @@ async def _reconcile_loop(interval: int, hours: int) -> None:
         await asyncio.sleep(interval)
 
 
+def _run_tradier_monitor() -> list[dict]:
+    from app.core.database import SessionLocal
+    from app.models import User
+    from app.models.tradier import TradierPosition
+    from app.services import tradier_bot
+    from sqlalchemy import select
+
+    out = []
+    db = SessionLocal()
+    try:
+        # only users with something at risk — no credentials are touched for
+        # anyone whose position table is empty
+        user_ids = {
+            r[0] for r in db.execute(
+                select(TradierPosition.user_id).where(
+                    TradierPosition.status.in_(tradier_bot.ACTIVE_STATUSES)
+                )
+            )
+        }
+        for uid in user_ids:
+            user = db.get(User, uid)
+            if user is None:
+                continue
+            try:
+                out.append(tradier_bot.monitor_pass(db, user))
+            except Exception as exc:              # noqa: BLE001
+                out.append({"user": uid, "error": str(exc)})
+    finally:
+        db.close()
+    return out
+
+
+async def _tradier_loop(interval: int) -> None:
+    """The SL half of the Tradier exit pair. The TP half rests on the venue
+    and needs nothing from us; this loop is what turns a stored sl_price
+    into an actual sell, so its cadence IS the stop's reaction time."""
+    log = logging.getLogger("app.tradier")
+    await asyncio.sleep(15)
+    while True:
+        try:
+            for result in await asyncio.to_thread(_run_tradier_monitor):
+                for ev in result.get("events") or []:
+                    log.info("tradier %s", ev)
+                if result.get("error"):
+                    log.debug("tradier sweep skipped: %s", result["error"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:                  # keep the loop alive
+            log.warning("tradier sweep failed: %s", exc)
+        await asyncio.sleep(interval)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
@@ -239,6 +291,10 @@ async def lifespan(app: FastAPI):
     if settings.reconcile_enabled and not settings.cloud_mode:
         tasks.append(asyncio.create_task(
             _reconcile_loop(settings.reconcile_interval_s, settings.reconcile_stale_hours)
+        ))
+    if settings.tradier_enabled and not settings.cloud_mode:
+        tasks.append(asyncio.create_task(
+            _tradier_loop(settings.tradier_monitor_interval_s)
         ))
     yield
     for task in tasks:
