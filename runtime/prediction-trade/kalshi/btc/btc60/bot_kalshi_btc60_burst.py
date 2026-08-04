@@ -253,24 +253,28 @@ class Bankroll:
         self._load()
 
     def _load(self) -> None:
+        # Fresh session on EVERY start (user 08/03): bankroll, banked profit
+        # and day_start reset to the seed. last_signal_bar alone is RESTORED
+        # — it is the stale-signal guard, and wiping it would re-trade a bar
+        # this bot already consumed before the restart.
         try:
             if STATE_FILE.is_file():
                 s = json.loads(STATE_FILE.read_text())
-                self.bankroll = float(s.get("bankroll", self.bankroll))
-                self.banked = float(s.get("banked", 0.0))
-                self.day_start = float(s.get("day_start", self.bankroll))
-                self.last_reset_date = s.get("last_reset_date", "")
-                self.n_trades = int(s.get("n_trades", 0))
                 self.last_signal_bar = int(s.get("last_signal_bar", 0))
-                _log("BANK", f"state loaded: bankroll=${self.bankroll:.2f} "
-                             f"banked=${self.banked:.2f} "
-                             f"day_start=${self.day_start:.2f}")
+                prev = float(s.get("bankroll", 0) or 0) + float(s.get("banked", 0) or 0)
+                if prev:
+                    _log("BANK", f"previous session equity ${prev:.2f} — "
+                                 f"fresh session reseeds ${BANKROLL_SEED:.2f}")
             else:
                 _log("BANK", f"FIRST LAUNCH — bankroll seeded ${BANKROLL_SEED:.2f}")
-                self.last_reset_date = datetime.now(_LOCAL).strftime("%Y-%m-%d")
-                self._save()
         except Exception as e:
-            _log("BANK", f"state load failed ({e}) — using seed")
+            _log("BANK", f"state read failed ({e}) — using seed")
+        self.bankroll = BANKROLL_SEED
+        self.banked = 0.0
+        self.day_start = BANKROLL_SEED
+        self.n_trades = 0
+        self.last_reset_date = datetime.now(_LOCAL).strftime("%Y-%m-%d")
+        self._save()
 
     def _save(self) -> None:
         STATE_FILE.write_text(json.dumps({

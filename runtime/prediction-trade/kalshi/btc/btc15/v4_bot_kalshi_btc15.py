@@ -427,15 +427,22 @@ class Bankroll:
     def _load(self) -> None:
         if not self.enabled:
             return
+        # Fresh session on EVERY start (user 08/03): the ledger — and the
+        # target/SL measured on it — always begins at the typed seed. The
+        # previous session's closing balance is logged for the record and
+        # then replaced; the state file's job is now only the in-session
+        # persistence that settle() and the TRUEPNL corrections need.
         try:
             if self._path.is_file():
                 d = json.loads(self._path.read_text())
-                # an explicit BTC_BANKROLL reseeds; only the running balance
-                # is restored when the seed is unchanged
-                if float(d.get("start", 0)) == self.start:
-                    self.balance = float(d.get("balance", self.start))
+                prev = float(d.get("balance", 0) or 0)
+                if prev and abs(prev - self.start) > 0.005:
+                    print(f"  [BANK] previous session ended at ${prev:.2f} — "
+                          f"fresh session resets to ${self.start:.2f}")
         except Exception as e:                       # never block a start
-            print(f"  [BANK] state load failed ({e}) — seeding ${self.start:.2f}")
+            print(f"  [BANK] state read failed ({e}) — seeding ${self.start:.2f}")
+        self.balance = self.start
+        self._save()
         print(f"  [BANK] bankroll ${self.balance:.2f} "
               f"(seed ${self.start:.2f}"
               + (f", target +{BTC15_TARGET_PCT:.0f}%" if BTC15_TARGET_PCT > 0 else "")

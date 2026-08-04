@@ -129,13 +129,19 @@ def test_btc15_floor_defaults_to_disabled():
     assert "if DO_NOT_BUY_IF_PORTFOLIO_BELOW > 0 and pv < DO_NOT_BUY_IF_PORTFOLIO_BELOW:" in src
 
 
-def test_btc15_bankroll_reseeds_only_when_the_seed_changes():
+def test_btc15_bankroll_is_fresh_every_start():
+    # Contract changed 08/03: EVERY start resets the ledger to the typed
+    # seed. The old resume-when-seed-unchanged path must stay gone, or a
+    # previous session's balance decides when the new session's target/SL
+    # fire.
     src = (RUNTIME / "btc" / "btc15" / "v4_bot_kalshi_btc15.py").read_text(
         encoding="utf-8", errors="replace"
     )
-    assert 'float(d.get("start", 0)) == self.start' in src, (
-        "a new BTC_BANKROLL would be overwritten by the persisted balance"
+    assert 'float(d.get("start", 0)) == self.start' not in src, (
+        "the resume-on-same-seed path is back - sessions would inherit "
+        "the previous ledger"
     )
+    assert "self.balance = self.start" in src, "the fresh reset is missing"
 
 
 def test_nothing_is_set_when_no_bankroll_is_given(tmp_path):
@@ -155,13 +161,20 @@ def test_btc60_target_is_measured_on_its_own_bankroll():
     assert "if learner.target_reached():" in src, "the target never gates new entries"
 
 
-def test_an_explicit_bankroll_reseeds_past_the_state_file():
+def test_btc60_learner_is_fresh_every_start():
+    # Contract changed 08/03: the learner no longer restores tp/sl/pv/
+    # bid_lo/bankroll from its state file - every session starts at the
+    # seed and the defaults (or the operator's pins).
     src = (RUNTIME / "btc" / "btc60" / "bot_kalshi_btc60_fable5.py").read_text(
         encoding="utf-8", errors="replace"
     )
-    load = src.find("def _load(")
-    reseed = src.find("bankroll reseeded to")
-    assert reseed > load, "reseed must run AFTER the state load or the file wins"
+    assert 'self.tp_pct = float(d.get("tp_pct"' not in src, (
+        "the learner resumes tp_pct from the state file again"
+    )
+    assert 'self.bankroll = float(d.get("bankroll"' not in src, (
+        "the learner resumes the bankroll from the state file again"
+    )
+    assert "fresh session resets to seed/defaults" in src
 
 
 def test_bank_is_rejected_when_not_positive():

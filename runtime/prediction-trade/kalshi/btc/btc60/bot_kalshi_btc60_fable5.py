@@ -847,21 +847,21 @@ class Learner:
         self._load()
 
     def _load(self) -> None:
+        # Fresh session on EVERY start (user 08/03): the bankroll begins at
+        # the seed, and tp/sl/pv/bid_lo begin at their defaults (or the
+        # operator's pins below) rather than resuming the previous session's
+        # learned values. The old state is logged for the record only —
+        # within a session the learner still tunes and persists as before.
         try:
             if STATE_FILE.is_file():
                 d = json.loads(STATE_FILE.read_text())
-                self.pv_pct = float(d.get("pv_pct", self.pv_pct))
-                self.tp_pct = float(d.get("tp_pct", self.tp_pct))
-                self.sl_pct = float(d.get("sl_pct", self.sl_pct))
-                self.bid_lo = int(d.get("bid_lo", self.bid_lo))
-                self.n_trades = int(d.get("n_trades", 0))
-                self.bankroll = float(d.get("bankroll", self.bankroll))
-                _log("LEARN", f"state loaded: bankroll=${self.bankroll:.2f} "
-                              f"pv={self.pv_pct:.1f}% "
-                              f"tp={self.tp_pct:.1f}% sl={self.sl_pct:.1f}% "
-                              f"bid_lo={self.bid_lo} n={self.n_trades}")
+                _log("LEARN", f"previous session: bankroll="
+                              f"${float(d.get('bankroll', 0) or 0):.2f} "
+                              f"tp={float(d.get('tp_pct', 0) or 0):.1f}% "
+                              f"sl={float(d.get('sl_pct', 0) or 0):.1f}% "
+                              f"- fresh session resets to seed/defaults")
         except Exception as e:
-            _log("LEARN", f"state load failed ({e}) - using defaults")
+            _log("LEARN", f"state read failed ({e}) - using defaults")
         if TP_PCT_OVERRIDE > 0:
             # applied AFTER the state load so the stored tp_pct cannot win
             self.tp_pct = TP_PCT_OVERRIDE
@@ -873,11 +873,9 @@ class Learner:
             self.sl_pct = SL_PCT_OVERRIDE
             _log("LEARN", f"sl_pct pinned to {self.sl_pct:.1f}% by BTC60_SL_PCT "
                           f"- the learner will not adjust it")
-        if BTC_BANKROLL_RESEED:
-            # an explicit per-bay bankroll reseeds the ledger, also after the
-            # state load, so the number the operator typed is the one traded
-            self.bankroll = BTC_BANKROLL_SEED
-            _log("LEARN", f"bankroll reseeded to ${self.bankroll:.2f} by BTC_BANKROLL")
+        _log("LEARN", f"session starts: bankroll=${self.bankroll:.2f} "
+                      f"pv={self.pv_pct:.1f}% tp={self.tp_pct:.1f}% "
+                      f"sl={self.sl_pct:.1f}% bid_lo={self.bid_lo}")
         # profit target is measured on THIS bot's bankroll, never the shared
         # account's portfolio value
         self.start_bankroll = self.bankroll
