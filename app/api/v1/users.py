@@ -59,7 +59,12 @@ def get_users(db: Session = Depends(get_db)) -> list[UserOut]:
     status_code=status.HTTP_201_CREATED,
 )
 def create_user(payload: UserCreate, db: Session = Depends(get_db)) -> UserOut:
-    _check_root_allowed(payload.user_root_folder)
+    # No folder given -> the server's customers root owns the layout; clients
+    # never need to know this machine's paths
+    root_folder = payload.user_root_folder or paths.canonical_str(
+        str(get_settings().customers_root / payload.username.lower())
+    )
+    _check_root_allowed(root_folder)
     dupe = db.scalar(select(User).where(User.username == payload.username))
     if dupe is not None:
         raise HTTPException(
@@ -76,7 +81,7 @@ def create_user(payload: UserCreate, db: Session = Depends(get_db)) -> UserOut:
     user = User(
         username=payload.username,
         email=payload.email,
-        user_root_folder=payload.user_root_folder,
+        user_root_folder=root_folder,
     )
     db.add(user)
     db.commit()

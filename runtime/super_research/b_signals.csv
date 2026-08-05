@@ -1,27 +1,29 @@
 logged_at_cst,category,ticker,book,direction,signal,confluence,signal_price,entry_ref,target_price,stop_price,stop_deadline_cst,target_deadline_cst,acc_tp_before_sl_pct,acc_strict_pct,bar_time_cst,repeats,hot,engines,eng_hot,tfs,econ,outcome,outcome_at
-2026-07-27 23:00:27,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,8,65384.2,65384.2,65547.66,65220.74,09:40,09:40,88.9,88.9,2026-07-27 08:35,2,,,,,,target,08:40
-2026-07-27 13:56:09,etf,QQQ,B,LONG,adi_up+s1_bounce+strong_close,1,681.05,681.05,682.76,679.35,14:35,14:35,87.5,87.5,2026-07-27 13:50,1,,1h+2h+4h,3,5m,,target,14:05
-2026-07-27 13:15:20,etf,GLD,B,SHORT,vwap_loss+weak_close+cvd_dn_v,10,373.96,373.96,373.03,374.89,13:45,13:45,87.5,50.0,2026-07-27 13:10,1,,30m,,5m,,timeout,13:45
-2026-07-27 12:30:12,etf,GLD,B,SHORT,vwap_loss+below_vwap,1,373.81,373.81,372.88,374.74,13:30,13:30,88.9,36.4,2026-07-27 12:00,1,,30m+1h,2,30m,,timeout,13:30
-2026-07-27 12:07:34,etf,GLD,B,SHORT,vwap_loss+weak_close+rsi_thrust_dn,1,373.92,373.92,372.99,374.85,13:05,13:05,100.0,42.9,2026-07-27 12:00,1,,30m+1h+2h+4h,4,5m,,timeout,13:05
-2026-07-27 10:36:20,etf,GLD,B,SHORT,below_vwap+r1_reject+weak_close,1,373.7,373.7,372.77,374.63,11:05,11:05,100.0,37.5,2026-07-27 10:30,1,,30m,,5m,,timeout,11:05
-2026-07-27 10:00:56,etf,SPX,B,LONG,poc_reject_up+strong_close+vwap_lo_bounce,1,7420.44,7420.44,7438.99,7401.89,11:00,11:00,85.7,66.7,2026-07-27 09:30,1,,30m+1h,2,30m,,stop,10:30
-2026-07-27 09:25:55,etf,GLD,B,SHORT,r1_reject+yhigh_reject+weak_close,2,373.73,373.73,372.8,374.66,09:30,09:30,100.0,42.9,2026-07-27 08:55,1,,30m+1h,2,5m,,timeout,09:30
-2026-07-24 13:01:19,etf,GLD,B,SHORT,vwap_loss+below_vwap,1,372.8,372.8,371.87,373.73,14:00,14:00,85.7,30.0,2026-07-24 12:30,1,,30m+1h,2,30m,,target,13:30
-2026-07-24 12:28:54,stock,MU,B,LONG,vwap_reclaim+rvol_thrust_up,3,945.91,945.91,949.69,942.12,14:35,14:35,87.5,87.5,2026-07-24 10:45,1,,30m+1h+2h+4h,4,15m,,target,11:05
-2026-07-28 12:00:29,india,BANKNIFTY,B,SHORT,delta_dump+below_pivot+orb_break_dn,2,589.15,589.15,587.68,590.62,15:30,15:30,100.0,75.0,2026-07-28 11:45,1,,30m+1h+2h+4h,4,5m+15m,,timeout,15:30
-2026-07-28 05:40:33,crypto,BTC,B,LONG,vwap_reclaim+adi_up+macd_x_up_neg,22,63410.44,63410.44,63568.97,63251.92,06:40,06:40,88.9,88.9,2026-07-28 05:35,1,,,,,,timeout,06:40
-2026-07-28 07:54:58,crypto,BTC,B,LONG,vwap_reclaim+adi_up+macd_x_up+strong_close,1,63480.38,63480.38,63639.08,63321.68,08:50,08:50,87.5,87.5,2026-07-28 07:45,1,,,,,,stop,08:20
-2026-07-28 08:50:13,stock,TSLA,B,LONG,above_vwap+ylow_reclaim+strong_close,2,305.86,305.86,307.08,304.64,12:50,12:50,90.9,90.9,2026-07-28 08:45,1,,30m+1h+2h+4h,4,5m,,stop,08:50
-2026-07-28 10:31:13,etf,QQQ,B,LONG,delta_surge+s1_bounce,1,676.64,676.64,678.33,674.95,14:30,14:30,87.5,87.5,2026-07-28 10:00,1,,1h+2h+4h,3,30m,,target,10:45
-2026-07-28 11:55:05,stock,COIN,B,LONG,adi_up+above_pivot+macd_x_up,8,167.86,167.86,168.53,167.19,14:35,14:35,92.9,92.9,2026-07-28 11:50,1,,30m+1h+2h+4h,4,5m,,stop,12:05
-2026-07-28 12:55:37,stock,MU,B,SHORT,below_pivot+weak_close+orb_break_dn,2,812.41,812.41,809.16,815.66,14:35,14:35,85.7,85.7,2026-07-28 12:40,2,,30m+1h+2h+4h,4,5m,,stop,12:45
-2026-07-28 13:00:45,etf,GLD,B,SHORT,vwap_loss+below_vwap,1,369.47,369.47,368.55,370.39,14:00,14:00,85.7,31.6,2026-07-28 12:30,1,,30m+1h,2,30m,,timeout,14:00
-2026-07-29 11:25:59,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,6,63984.47,63984.47,64144.43,63824.51,12:25,12:25,88.9,88.9,2026-07-29 11:20,1,,,,,FOMC rate decision 13:00 CST,stop,11:35
-2026-07-29 12:02:28,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1216.38,1216.38,1211.51,1221.25,14:35,14:35,100.0,75.0,2026-07-29 11:30,1,,30m+1h+2h+4h,4,30m,FOMC rate decision 13:00 CST,stop,12:15
-2026-07-29 12:16:14,etf,QQQ,B,LONG,adi_up+s1_bounce+strong_close,1,669.35,669.35,671.02,667.68,14:35,14:35,87.5,87.5,2026-07-29 12:00,2,,30m+1h+2h+4h,4,5m,FOMC rate decision 13:00 CST,target,12:10
-2026-07-29 13:00:53,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1216.88,1216.88,1212.01,1221.74,14:35,14:35,100.0,75.0,2026-07-29 12:30,1,,30m+1h+2h+4h,4,30m,FOMC rate decision 13:00 CST,target,14:20
-2026-07-29 13:40:04,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,6,64112.48,64112.48,64272.76,63952.2,14:40,14:40,88.9,88.9,2026-07-29 13:35,1,,,,,FOMC rate decision 13:00 CST,target,13:40
-2026-07-29 13:51:03,etf,SPY,B,LONG,delta_surge+above_pivot+strong_close+mom_ignite_up,1,741.92,741.92,743.77,740.07,14:35,14:35,88.9,61.5,2026-07-29 13:45,1,,2h+4h,2,5m,FOMC rate decision 13:00 CST,stop,14:05
-2026-07-29 14:01:06,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1217.56,1217.56,1212.69,1222.43,14:35,14:35,100.0,75.0,2026-07-29 13:30,1,,30m+1h+2h+4h,4,30m,FOMC rate decision 13:00 CST,target,14:20
-2026-07-30 12:00:34,india,BANKNIFTY,B,SHORT,below_pivot+weak_close+orb_break_dn+cvd_dn,1,588.19,588.19,586.72,589.66,13:00,13:00,100.0,33.3,2026-07-30 11:45,1,,30m+1h+2h+4h,4,15m,,,
+2026-08-03 13:01:12,etf,GLD,B,SHORT,vwap_loss+below_vwap,1,369.73,369.73,368.81,370.65,14:00,14:00,85.7,27.3,2026-08-03 12:30,1,,30m+1h,2,30m,10Y -5bp to 4.692%,stop,13:40
+2026-08-03 12:55:44,etf,GLD,B,SHORT,below_pivot+weak_close+vwap_loss_v,2,369.72,369.72,368.8,370.64,14:35,14:35,87.5,63.6,2026-08-03 12:50,1,,30m+1h+2h+4h,4,5m,10Y -5bp to 4.692%,stop,13:40
+2026-08-03 12:17:26,stock,COIN,B,LONG,adi_up+above_pivot+macd_x_up,6,151.37,151.37,151.98,150.76,14:35,14:35,85.7,85.7,2026-08-03 12:10,1,,30m+1h+2h+4h,4,5m,10Y -5bp to 4.692%,target,12:20
+2026-08-03 11:30:41,stock,COIN,B,LONG,adi_up+above_pivot+macd_x_up,6,150.72,150.72,151.32,150.12,14:35,14:35,85.7,85.7,2026-08-03 11:25,1,,30m+1h+2h+4h,4,5m,10Y -5bp to 4.692%,stop,11:35
+2026-08-03 09:28:40,stock,MU,B,LONG,macd_x_up+hist_turn_up,1,797.82,797.82,801.01,794.62,13:00,13:00,83.3,83.3,2026-08-03 08:55,1,,30m+1h+2h+4h,4,5m,10Y -5bp to 4.692%,stop,09:00
+2026-08-03 09:28:25,crypto,BTC,B,SHORT,adi_dn+delta_dump+macd_x_dn_pos+hist_turn_dn,6,62611.2,62611.2,62454.67,62767.73,07:45,07:45,85.7,85.7,2026-08-03 06:40,1,,,,,10Y -5bp to 4.692%,target,07:05
+2026-08-03 09:28:25,crypto,BTC,B,LONG,above_vwap+ylow_reclaim+strong_close,1,62869.46,62869.46,63026.63,62712.29,09:20,09:20,85.7,85.7,2026-08-03 08:15,2,,,,,10Y -5bp to 4.692%,stop,08:25
+2026-08-03 09:28:25,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,8,63292.8,63292.8,63451.03,63134.57,10:00,10:00,88.9,88.9,2026-08-03 08:55,1,,,,,10Y -5bp to 4.692%,stop,09:00
+2026-07-31 12:00:39,india,BANKNIFTY,B,SHORT,below_vwap+yhigh_reject,1,591.61,591.61,590.13,593.09,14:00,14:00,83.3,62.5,2026-07-31 11:55,1,,1h+2h,2,5m,,timeout,14:00
+2026-07-31 10:55:19,etf,SPX,B,LONG,above_vwap+poc_reject_up,1,7443.74,7443.74,7462.35,7425.13,14:35,14:35,77.8,70.0,2026-07-31 10:35,2,,4h,,5m,,target,11:20
+2026-08-04 10:35:40,india,NIFTY,B,SHORT,below_vwap+yhigh_reject,5,279.9,279.9,279.2,280.6,14:35,14:35,90.0,81.8,2026-08-04 10:30,1,,1h+2h+4h,3,5m,10Y +8bp to 4.745%,timeout,14:35
+2026-08-04 11:30:03,india,NIFTY,B,SHORT,below_vwap+yhigh_reject,3,280.04,280.04,279.34,280.74,15:25,15:25,90.0,81.8,2026-08-04 11:20,2,,1h+2h+4h,3,5m,10Y +8bp to 4.745%,timeout,15:25
+2026-08-04 11:45:40,india,BANKNIFTY,B,SHORT,below_pivot+weak_close+orb_break_dn+cvd_dn,1,596.54,596.54,595.05,598.03,12:45,12:45,100.0,40.0,2026-08-04 11:30,1,,30m+1h+2h+4h,4,15m,10Y +8bp to 4.745%,timeout,12:45
+2026-08-04 09:15:06,stock,AMZN,B,LONG,delta_surge+ylow_reclaim,26,278.45,278.45,279.56,277.34,13:10,13:10,88.9,88.9,2026-08-04 09:05,2,,30m+1h+2h+4h,4,5m,10Y +8bp to 4.745%,target,09:10
+2026-08-04 11:37:37,stock,AMZN,B,LONG,delta_surge+ylow_reclaim,4,278.5,278.5,279.61,277.39,14:35,14:35,83.3,83.3,2026-08-04 11:00,1,,2h+4h,2,30m,10Y +8bp to 4.745%,stop,13:35
+2026-08-04 11:50:46,stock,AMZN,B,SHORT,hist_turn_dn+weak_close+vwap_hi_reject,4,278.73,278.73,277.62,279.84,12:50,12:50,100.0,42.9,2026-08-04 11:45,1,,1h+2h+4h,3,5m,10Y +8bp to 4.745%,timeout,12:50
+2026-08-04 12:00:53,stock,AMZN,B,SHORT,hist_turn_dn+vwap_hi_reject,1,278.16,278.16,277.05,279.27,13:00,13:00,83.3,50.0,2026-08-04 11:45,1,,1h,,15m,10Y +8bp to 4.745%,timeout,13:00
+2026-08-04 12:31:18,stock,LLY,B,SHORT,below_vwap+poc_reject_dn+below_pivot,1,1113.85,1113.85,1109.39,1118.31,14:35,14:35,83.3,71.4,2026-08-04 12:00,1,,2h+4h,2,30m,10Y +8bp to 4.745%,stop,12:45
+2026-08-04 13:01:20,etf,GLD,B,SHORT,vwap_loss+below_vwap,1,374.89,374.89,373.95,375.83,14:35,14:35,85.7,54.5,2026-08-04 12:55,1,,30m+1h+2h,3,5m+30m,10Y +8bp to 4.745%,target,13:40
+2026-08-04 18:00:52,crypto,BTC,B,LONG,above_vwap+macd_x_up_neg+hist_turn_up,1,64221.82,64221.82,64382.37,64061.27,19:00,19:00,87.5,87.5,2026-08-04 17:55,1,,,,,10Y +8bp to 4.745%,target,18:05
+2026-08-05 10:45:22,india,NIFTY,B,SHORT,below_vwap+yhigh_reject,1,280.47,280.47,279.77,281.17,14:45,14:45,92.3,85.7,2026-08-05 10:40,1,,30m+1h+2h+4h,4,5m,10Y -6bp to 4.627%,timeout,14:45
+2026-08-05 11:42:04,india,NIFTY,B,SHORT,below_vwap+yhigh_reject,5,280.38,280.38,279.68,281.08,15:30,15:30,92.3,85.7,2026-08-05 11:30,3,1,30m+1h+2h+4h,4,5m,10Y -6bp to 4.627%,timeout,15:30
+2026-08-05 12:01:11,india,NIFTY,B,SHORT,r1_reject+weak_close,1,280.1,280.1,279.4,280.8,15:30,15:30,100.0,60.0,2026-08-05 11:30,1,,2h+4h,2,30m,10Y -6bp to 4.627%,timeout,15:30
+2026-08-05 06:55:56,crypto,BTC,B,SHORT,below_vwap+adi_dn+macd_x_dn+hist_turn_dn,1,64000.02,64000.02,63840.02,64160.02,07:55,07:55,85.7,85.7,2026-08-05 06:50,1,,,,,10Y -6bp to 4.627%,stop,07:10
+2026-08-05 08:40:47,crypto,BTC,B,LONG,poc_reject_up+delta_surge+strong_close,6,64175.98,64175.98,64336.42,64015.54,09:40,09:40,88.9,88.9,2026-08-05 08:35,1,,,,,10Y -6bp to 4.627%,stop,08:45
+2026-08-05 09:06:11,stock,AMZN,B,LONG,adi_up+ylow_reclaim+hist_turn_up,6,276.45,276.45,277.56,275.34,13:05,13:05,87.5,87.5,2026-08-05 09:00,1,,30m+1h+2h+4h,4,5m,10Y -6bp to 4.627%,target,09:30
+2026-08-05 10:45:32,etf,SPY,B,LONG,poc_reject_up+above_pivot,1,772.01,772.01,773.94,770.08,11:15,11:15,100.0,25.0,2026-08-05 10:30,1,,30m+1h+2h+4h,4,15m,10Y -6bp to 4.627%,stop,11:05
+2026-08-05 11:30:31,etf,SPY,B,LONG,poc_reject_up+above_pivot,1,772.1,772.1,774.03,770.17,14:35,14:35,83.3,62.5,2026-08-05 11:00,1,,30m+1h+2h+4h,4,5m+15m+30m,10Y -6bp to 4.627%,stop,11:05

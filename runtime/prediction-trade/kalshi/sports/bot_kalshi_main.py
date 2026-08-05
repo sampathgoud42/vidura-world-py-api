@@ -117,7 +117,11 @@ def _main_checkout_root(p: Path) -> Path:
 _PROJECT_ROOT = _main_checkout_root(_HERE.resolve().parents[2])  # 38trades-py-claude
 SPORTS_CUSTOMERS_DIR = Path(os.getenv("SPORTS_CUSTOMERS_DIR",
                                       str(_PROJECT_ROOT / "customers")))
-SPORTS_CUSTOMER = sys.argv[1] if len(sys.argv) > 1 else os.getenv("SPORTS_CUSTOMER", "suma")
+SPORTS_CUSTOMER = (sys.argv[1] if len(sys.argv) > 1
+                   else os.getenv("SPORTS_CUSTOMER", "")).strip()
+if not SPORTS_CUSTOMER:
+    sys.exit("usage: bot_kalshi_main.py <customer>  (or export SPORTS_CUSTOMER) — "
+             "no default customer on this deployment")
 CUSTOMER_DIR = SPORTS_CUSTOMERS_DIR / SPORTS_CUSTOMER
 
 _secrets_found = False
@@ -249,6 +253,56 @@ SPORT_DRAIN_TIMEOUT_S = int(os.getenv("SPORT_DRAIN_TIMEOUT_S", "3600"))
 _TARGET_REACHED = asyncio.Event()
 _STOP = asyncio.Event()
 _PAUSE_UNTIL = 0.0
+
+# ── quiet hours: no NEW entries inside these LOCAL-time windows ──────────────
+# Same env + semantics as the BTC engines' NO_TRADE_TIMES: comma-separated
+# HH:MM-HH:MM ranges on the machine's clock. Env unset -> the default below;
+# env set to '' -> disabled (trade around the clock). Only new buys are
+# gated — the TP guardian, stops, drains and open-position management keep
+# running through the window, so nothing at risk is ever left unattended.
+SPORT_NO_TRADE_DEFAULT = "16:00-20:00"
+_NTT_RAW = os.getenv("NO_TRADE_TIMES")
+
+
+def _parse_no_trade(raw: str) -> list:
+    wins = []
+    for part in (raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            a, b = part.split("-")
+            ah, am = (int(x) for x in a.strip().split(":"))
+            bh, bm = (int(x) for x in b.strip().split(":"))
+            wins.append((ah * 60 + am, bh * 60 + bm))
+        except Exception:
+            print(f"  [QUIET] bad NO_TRADE_TIMES range {part!r} — ignored", file=sys.stderr)
+    return wins
+
+
+NO_TRADE_WINDOWS = _parse_no_trade(SPORT_NO_TRADE_DEFAULT if _NTT_RAW is None else _NTT_RAW)
+_QUIET_STATE = {"on": False}
+
+
+def _in_no_trade_window() -> bool:
+    """True inside a quiet window (handles overnight wraps like 22:00-03:00);
+    logs the transitions once so the tail shows WHY entries paused."""
+    if NO_TRADE_WINDOWS:
+        t = time.localtime()
+        m = t.tm_hour * 60 + t.tm_min
+        quiet = any((a <= m < b) if a <= b else (m >= a or m < b)
+                    for a, b in NO_TRADE_WINDOWS)
+    else:
+        quiet = False
+    if quiet and not _QUIET_STATE["on"]:
+        shown = SPORT_NO_TRADE_DEFAULT if _NTT_RAW is None else _NTT_RAW
+        print(f"  [QUIET] inside no-trade window ({shown}) — new entries paused, "
+              f"open positions still managed")
+        _QUIET_STATE["on"] = True
+    elif not quiet and _QUIET_STATE["on"]:
+        print("  [QUIET] no-trade window ended — entries resume")
+        _QUIET_STATE["on"] = False
+    return quiet
 
 # ── PAPER TRADING mode (user 07/17) ───────────────────────────────────────────
 # MAIN_PAPER=TRUE: the full pipeline runs — discovery, models (tennis v5 +
@@ -1674,7 +1728,8 @@ async def _pv_target_guard(client, starting_pv: float, target_pv,
           f"{' + machine shutdown' if HALT_MACHINE_SHUTDOWN else ''}.")
     if HALT_MACHINE_SHUTDOWN:
         print("  [MAIN TARGET-PV HALT] initiating machine shutdown in 30s …")
-        os.system("shutdown /s /f /t 30")
+        os.system("shutdown /s /f /t 30" if os.name == "nt"
+                  else "shutdown -h +1")
     _STOP.set()
 
 
@@ -1692,6 +1747,9 @@ async def _watch_ticker(c, adapter, tk, traded, dropped, sem, main_by_sport) -> 
         _pause = _PAUSE_UNTIL - time.time()
         if _pause > 0:
             await asyncio.sleep(min(_pause + 1, SPORT_NOTSTARTED_POLL_S))
+            continue
+        if _in_no_trade_window():                      # quiet hours: idle, no buys
+            await asyncio.sleep(60)
             continue
         if not any(m["ticker"] == tk for m in main_by_sport.get(adapter.name, [])):
             return                                     # dropped from the watchlist

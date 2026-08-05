@@ -310,13 +310,28 @@ async def run_refresh(reason: str) -> None:
         return
     async with _refresh_lock:
         _last_refresh_kick = _now_ct()
-        log(f"[REFRESH] btc15_quarter.bat {REFRESH_HOURS}  ({reason})")
+        log(f"[REFRESH] quarter signals {REFRESH_HOURS}h  ({reason})")
         try:
-            proc = await asyncio.create_subprocess_exec(
-                "cmd", "/c", str(QUARTER_BAT), REFRESH_HOURS,
-                cwd=str(QUARTER_BAT.parent),
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            await asyncio.wait_for(proc.wait(), timeout=240)
+            if os.name == "nt" and QUARTER_BAT.is_file():
+                # Windows: the bat, exactly as always
+                proc = await asyncio.create_subprocess_exec(
+                    "cmd", "/c", str(QUARTER_BAT), REFRESH_HOURS,
+                    cwd=str(QUARTER_BAT.parent),
+                    stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await asyncio.wait_for(proc.wait(), timeout=240)
+            else:
+                # POSIX (or bat missing): run what the bat runs, directly —
+                # cmd.exe does not exist there and a silent failure here
+                # would leave the bot trading on stale signals
+                for argv in (
+                    [sys.executable, str(QUARTER_BAT.parent / "btc15_signal.py"),
+                     "--hours", str(REFRESH_HOURS)],
+                    [sys.executable, str(QUARTER_BAT.parent / "bake_btc15_dashboard.py")],
+                ):
+                    proc = await asyncio.create_subprocess_exec(
+                        *argv, cwd=str(QUARTER_BAT.parent),
+                        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                    await asyncio.wait_for(proc.wait(), timeout=240)
             log(f"[REFRESH] done (rc={proc.returncode})")
         except Exception as e:
             log(f"[REFRESH] error: {e}")

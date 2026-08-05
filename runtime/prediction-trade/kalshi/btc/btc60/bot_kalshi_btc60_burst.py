@@ -158,10 +158,19 @@ _LOCAL = ZoneInfo("America/Chicago")
 load_dotenv(_ROOT / "btc.env")                   # customer_folder / default_customer
 
 # ── secrets from the customer folder (same scheme as fable5) ─────────────────
+def _require_customer() -> str:
+    """No silent default: another machine must never pick up a
+    stranger's folder name. The API injects BTC_CUSTOMER."""
+    name = os.getenv("BTC_CUSTOMER", os.getenv("default_customer", "")).strip()
+    if not name:
+        sys.exit("BTC_CUSTOMER (or btc.env default_customer) must name "
+                 "the customer folder — there is no default on this deployment")
+    return name
+
+
 _CUSTOMER_DIR = (Path(os.getenv("BTC_CUSTOMERS_DIR",
                                 os.getenv("customer_folder", "")).strip())
-                 / os.getenv("BTC_CUSTOMER",
-                              os.getenv("default_customer", "suma")).strip())
+                 / _require_customer())
 _secrets_found = False
 for _cand in [_CUSTOMER_DIR / ".env"] + sorted(_CUSTOMER_DIR.glob("*.env")):
     if _cand.is_file():

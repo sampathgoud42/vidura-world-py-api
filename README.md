@@ -1,5 +1,7 @@
 # Vidura World API
 
+> **Deploying on a new machine (Linux/macOS/Windows)?** Follow [DEPLOY_ANY_MACHINE.md](DEPLOY_ANY_MACHINE.md) — portable defaults, `.env` configuration, and user onboarding. The paths below describe the original workstation and are ONE example configuration.
+
 Multi-user REST backend for the 38trades ecosystem: Kalshi BTC bots (15-minute
 and 60-minute), the multi-sport trading bot, tennis prediction models, and the
 wellness app. FastAPI + SQLAlchemy + SQLite, designed to serve mobile and web

@@ -33,11 +33,14 @@ from app.services.tradier_client import TradierClient, TradierError
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DELTA_MIN = 0.25
-DEFAULT_DELTA_MAX = 0.50
-DEFAULT_BUY_PCT = 50.0
-DEFAULT_TP_PCT = 15.0
-DEFAULT_SL_PCT = 30.0
+# Desk-wide defaults live in Settings (env: VIDURA_TRADIER_*); these module
+# aliases keep every existing call-site and API Field(default=...) working.
+_S = get_settings()
+DEFAULT_DELTA_MIN = _S.tradier_delta_min
+DEFAULT_DELTA_MAX = _S.tradier_delta_max
+DEFAULT_BUY_PCT = _S.tradier_buy_pct
+DEFAULT_TP_PCT = _S.tradier_tp_pct
+DEFAULT_SL_PCT = _S.tradier_sl_pct
 
 ACTIVE_STATUSES = ("pending", "open")
 
@@ -127,6 +130,8 @@ def open_position(
     tp_pct: float = DEFAULT_TP_PCT,
     sl_pct: float = DEFAULT_SL_PCT,
     expiration: str | None = None,
+    min_contracts: int = 1,
+    strategy: str = "Manual",
 ) -> TradierPosition:
     """Select, size and buy; the monitor takes over from there."""
     symbol = symbol.strip().upper()
@@ -163,11 +168,12 @@ def open_position(
 
         limit_price = float(opt["ask"])      # what a buy actually costs
         contracts = size_contracts(buying_power, buy_pct, limit_price)
-        if contracts < 1:
+        if contracts < max(1, min_contracts):
             raise TradierBotError(
-                f"{buy_pct:g}% of ${buying_power:.2f} does not cover one "
-                f"{opt['symbol']} contract at ${limit_price:.2f} "
-                f"(${limit_price * 100:.2f}/contract)", 409
+                f"sized {contracts} contract(s) — below min_contracts "
+                f"{max(1, min_contracts)}: {buy_pct:g}% of ${buying_power:.2f} "
+                f"at ${limit_price:.2f} (${limit_price * 100:.2f}/contract) "
+                f"for {opt['symbol']}", 409
             )
 
         order = client.place_option_order(
@@ -191,6 +197,7 @@ def open_position(
         sl_pct=sl_pct,
         buy_pct=buy_pct,
         buy_order_id=str(order["id"]),
+        strategy=(strategy or "Manual")[:64],
         status="pending",
         note=f"buy_to_open {contracts} @ {limit_price:.2f} limit",
         raw={"buy_order": order, "picked": {

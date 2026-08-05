@@ -46,7 +46,7 @@ import importlib                                                # noqa: E402
 TENNIS_MODEL = (os.getenv("TENNIS_MODEL") or "v5").strip().lower()
 if TENNIS_MODEL in ("", "default"):
     TENNIS_MODEL = "v5"
-if TENNIS_MODEL not in ("v1", "v2", "v3", "v4", "v5"):
+if TENNIS_MODEL not in ("v1", "v2", "v3", "v4", "v5", "v6"):
     print(f"  [TENNIS] unknown TENNIS_MODEL={TENNIS_MODEL!r} — falling back to v5",
           flush=True)
     TENNIS_MODEL = "v5"

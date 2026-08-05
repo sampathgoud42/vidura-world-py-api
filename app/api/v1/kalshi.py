@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from app.api.deps import get_user_or_404
+from app.core.database import get_db
 from app.models import User
 from app.schemas.kalshi import KalshiClientState
 from app.services import credentials as creds_svc
@@ -101,13 +102,48 @@ def get_kalshi_client(
         client.close()
 
 
+def _record_daily_pv(db, user_id: str, pv: dict) -> None:
+    """Upsert TODAY's (CST) portfolio value into daily_snapshots (kind 'pv').
+
+    Every fresh Kalshi fetch overwrites the day's row, so each date holds the
+    LAST value seen that day — the daily pixel graph reads this series. One
+    row per calendar day, account-wide (the Kalshi account is shared).
+    """
+    from zoneinfo import ZoneInfo
+
+    from sqlalchemy import select as sa_select
+
+    from app.models import DailySnapshot
+
+    today = datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d")
+    payload = {
+        "total_usd": round((pv.get("cash_usd") or 0) + (pv.get("positions_usd") or 0), 2),
+        "cash_usd": pv.get("cash_usd"),
+        "positions_usd": pv.get("positions_usd"),
+        "user_id": user_id,
+        "at": datetime.now(timezone.utc).isoformat(),
+    }
+    row = db.scalar(sa_select(DailySnapshot).where(
+        DailySnapshot.kind == "pv", DailySnapshot.snapshot_date == today))
+    if row is None:
+        db.add(DailySnapshot(kind="pv", snapshot_date=today, payload=payload,
+                             source_file="kalshi_portfolio",
+                             fetched_at=datetime.now(timezone.utc).replace(tzinfo=None)))
+    else:
+        row.payload = payload
+        row.fetched_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.commit()
+
+
 @router.get("/portfolio", operation_id="getPortfolioValue")
-def get_portfolio_value(user: User = Depends(get_user_or_404)) -> dict:
+def get_portfolio_value(user: User = Depends(get_user_or_404),
+                        db=Depends(get_db)) -> dict:
     """Live portfolio value: settled cash + mark-to-market on open positions.
 
     Read-only, and the same figure the bots print as [TARGET-PV], so the desk
     and the bot logs agree. Cached briefly so a polling UI cannot turn into a
-    request per viewer per second against Kalshi.
+    request per viewer per second against Kalshi. Every FRESH fetch also
+    files today's value into daily_snapshots for the PV progress graph.
     """
     cached = _pv_cache_get(user.user_id)
     if cached is not None:
@@ -134,7 +170,38 @@ def get_portfolio_value(user: User = Depends(get_user_or_404)) -> dict:
 
     out = {**pv, "fetched_at": datetime.now(timezone.utc).isoformat(), "cached": False}
     _pv_cache_put(user.user_id, out)
+    try:
+        _record_daily_pv(db, user.user_id, pv)   # the graph's daily capture
+    except Exception:  # noqa: BLE001 — recording must never sink the read
+        db.rollback()
     return out
+
+
+@router.get("/portfolio/history", operation_id="getPortfolioHistory")
+def get_portfolio_history(days: int = 366,
+                          user: User = Depends(get_user_or_404),
+                          db=Depends(get_db)) -> dict:
+    """Daily portfolio values (kind 'pv' snapshots), oldest first.
+
+    One row per CST calendar day, written by every fresh /portfolio fetch —
+    feeds the desk's pixel progress graph.
+    """
+    from sqlalchemy import select as sa_select
+
+    from app.models import DailySnapshot
+
+    rows = db.scalars(
+        sa_select(DailySnapshot).where(DailySnapshot.kind == "pv")
+        .order_by(DailySnapshot.snapshot_date.desc()).limit(max(1, min(days, 3660)))
+    ).all()
+    items = [{
+        "date": r.snapshot_date,
+        "total_usd": (r.payload or {}).get("total_usd"),
+        "cash_usd": (r.payload or {}).get("cash_usd"),
+        "positions_usd": (r.payload or {}).get("positions_usd"),
+        "seeded": bool((r.payload or {}).get("seeded")),
+    } for r in reversed(rows)]
+    return {"total": len(items), "items": items}
 
 
 class PasswordCheck(BaseModel):

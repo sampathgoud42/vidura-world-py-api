@@ -105,11 +105,15 @@ class TradierClient:
                or margin.get("option_buying_power")
                or cash.get("cash_available")
                or b.get("total_cash") or 0)
+        open_pl = float(b.get("open_pl") or 0)
+        close_pl = float(b.get("close_pl") or 0)   # today's realized P&L
         return {
             "total_equity": float(b.get("total_equity") or 0),
             "total_cash": float(b.get("total_cash") or 0),
             "option_buying_power": float(obp or 0),
-            "open_pl": float(b.get("open_pl") or 0),
+            "open_pl": open_pl,
+            "close_pl": close_pl,
+            "day_pl": open_pl + close_pl,          # what "today" cost or made
             "account_id": self.creds.account_id,
             "sandbox": self.creds.sandbox,
         }
@@ -132,6 +136,14 @@ class TradierClient:
         if not quotes:
             raise TradierError(f"no quote for {occ_symbol}")
         return quotes[0]
+
+    def quotes(self, symbols: list[str]) -> list[dict]:
+        """Batch quotes — one request however many symbols. Symbols Tradier
+        does not recognize are simply absent from the response (they land in
+        ``unmatched_symbols``), so callers must fill gaps themselves."""
+        d = self._req("GET", "/markets/quotes",
+                      params={"symbols": ",".join(symbols)})
+        return _as_list((d.get("quotes") or {}).get("quote"))
 
     # ── orders ──────────────────────────────────────────────────────────────
     def place_option_order(self, *, underlying: str, occ_symbol: str, side: str,

@@ -267,10 +267,19 @@ from btc.liquidity_sr import LiquiditySR, run as lsr_run   # noqa: E402  POC (lo
 #  Override the customer without touching btc.env via BTC_CUSTOMERS_DIR /
 #  BTC_CUSTOMER env vars (e.g. a differently-configured launch).
 # ══════════════════════════════════════════════════════════════════════════
+def _require_customer() -> str:
+    """No silent default: another machine must never pick up a
+    stranger's folder name. The API injects BTC_CUSTOMER."""
+    name = os.getenv("BTC_CUSTOMER", os.getenv("default_customer", "")).strip()
+    if not name:
+        sys.exit("BTC_CUSTOMER (or btc.env default_customer) must name "
+                 "the customer folder — there is no default on this deployment")
+    return name
+
+
 _CUSTOMER_DIR = (Path(os.getenv("BTC_CUSTOMERS_DIR",
                                 os.getenv("customer_folder", "")).strip())
-                 / os.getenv("BTC_CUSTOMER",
-                              os.getenv("default_customer", "suma")).strip())
+                 / _require_customer())
 
 _secrets_found = False
 for _cand in [_CUSTOMER_DIR / ".env"] + sorted(_CUSTOMER_DIR.glob("*.env")):

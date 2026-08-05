@@ -1,8 +1,11 @@
 """Application settings.
 
 Every value can be overridden with a ``VIDURA_``-prefixed environment
-variable, e.g. ``VIDURA_DATABASE_PATH=/home/app/data/app.db`` on Linux.
-Defaults target the Windows workstation this project was born on.
+variable (or a ``.env`` file next to the project), e.g.
+``VIDURA_DATABASE_PATH=/home/app/data/app.db``. Defaults are portable —
+project-relative paths, paper-only — so a fresh checkout runs anywhere;
+machine-specific values belong in that machine's ``.env``
+(see .env.example and DEPLOY_ANY_MACHINE.md).
 """
 
 from __future__ import annotations
@@ -21,7 +24,9 @@ class Settings(BaseSettings):
     api_v1_prefix: str = "/api/v1"
 
     # --- persistence ---------------------------------------------------
-    database_path: Path = Path("D:/_projects/database/app.db")
+    # Portable default: the project's own var/ folder. Deployments that keep
+    # the DB elsewhere set VIDURA_DATABASE_PATH (see .env / DEPLOYMENT.md).
+    database_path: Path = Path(__file__).resolve().parents[2] / "var" / "app.db"
     # Full SQLAlchemy URL override — set this to run on Postgres in the
     # cloud (e.g. Render/Neon: postgresql+psycopg://user:pw@host/db).
     # Empty = use the SQLite file above.
@@ -40,18 +45,19 @@ class Settings(BaseSettings):
     # original 38trades-py-claude checkout. Override only if you keep the
     # runtime somewhere else.
     source_repo: Path = Path(__file__).resolve().parents[2] / "runtime"
-    customers_root: Path = Path("D:/_projects/customers")
+    # Portable default: a customers/ folder next to the app. Point
+    # VIDURA_CUSTOMERS_ROOT wherever the secrets folders actually live.
+    customers_root: Path = Path(__file__).resolve().parents[2] / "customers"
 
     # Python used to launch bot subprocesses (defaults to this app's venv
     # python; bots only need requests/cryptography which are installed here).
     bot_python: Path | None = None
 
-    # Python for super_research supervisors/workers. They need yfinance and
-    # friends, which live in the system install that already runs them daily
-    # (schtask + bots.py), not in this venv.
-    super_python: Path = Path(
-        "C:/Users/sampa/AppData/Local/Python/pythoncore-3.14-64/python.exe"
-    )
+    # Python for super_research supervisors/workers (needs yfinance etc.).
+    # None -> this API's own interpreter; set VIDURA_SUPER_PYTHON to a
+    # separate install when the engines' deps live elsewhere. Every call
+    # site falls back to sys.executable when the path is missing.
+    super_python: Path | None = None
 
     # Background ingest: continuously mirror every signal the super_research
     # service generates (central ledgers + per-ticker worker CSVs + gex/econ
@@ -62,6 +68,13 @@ class Settings(BaseSettings):
     @property
     def super_dir(self) -> Path:
         return self.source_repo / "super_research"
+
+    # Day-trade folder holding levels_watcher.py (SPY/QQQ/SPX level crosses).
+    # OPTIONAL component: when the folder is absent the desk degrades
+    # gracefully ("watcher not running"). On the original workstation set
+    # VIDURA_LEVELS_DIR to the bot repo's stock-trade folder — the watcher
+    # appends to that folder's day_trade.csv, so there must be exactly one.
+    levels_dir: Path = Path(__file__).resolve().parents[2] / "runtime" / "stock-trade"
 
     # --- runtime dirs ---------------------------------------------------
     var_dir: Path = Path(__file__).resolve().parents[2] / "var"
@@ -102,16 +115,36 @@ class Settings(BaseSettings):
     # just still holding.
     reconcile_stale_hours: int = 24
 
-    # Tradier position monitor: sweeps managed options positions for buy
-    # fills, TP fills and SL breaches. The TP rests on the venue; the SL is
-    # THIS loop, so the interval is the SL's reaction time.
+    # --- Tradier desk (env: VIDURA_TRADIER_*) ------------------------------
+    # Position monitor: sweeps managed options positions for buy fills, TP
+    # fills and SL breaches. The TP rests on the venue; the SL is THIS loop,
+    # so the interval is the SL's reaction time.
     tradier_enabled: bool = True
     tradier_monitor_interval_s: int = 10
+
+    # Desk-wide defaults for the executor (composer + auto-trader fall back
+    # to these when a request does not spell its own out).
+    tradier_delta_min: float = 0.25
+    tradier_delta_max: float = 0.50
+    tradier_buy_pct: float = 50.0        # % of option buying power per trade
+    tradier_tp_pct: float = 15.0         # resting sell above entry
+    tradier_sl_pct: float = 30.0         # monitored stop below entry
+
+    # Opening-range auto-trader (the AUTO TRADE button).
+    tradier_auto_strategy: str = "10min_intraday_move"
+    tradier_auto_tickers: str = "SPY,QQQ,SPX"
+    tradier_auto_window_open: str = "08:30"    # CST — crosses before are stale
+    tradier_auto_window_close: str = "09:30"   # CST — crosses after are ignored
+    tradier_auto_confirm_s: int = 300          # signal must still hold after this
+    tradier_auto_poll_s: int = 20              # level-snapshot poll cadence
+    tradier_auto_min_contracts: int = 1        # sized below this -> skip trade
 
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the
-    # exchange.  Flip to False deliberately, never by accident.
+    # exchange. Flip to False deliberately, never by accident — the CODE
+    # default stays True so a fresh deployment can never go live by surprise;
+    # unlock per machine via VIDURA_PAPER_ONLY=false in its .env.
     paper_only: bool = True
 
     # Optional shared API key. When set, every /api request must carry it in

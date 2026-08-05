@@ -130,7 +130,7 @@ def in_session(session):
     return now.weekday() < 5 and RTH_OPEN <= now.time() < RTH_CLOSE
 
 
-CREATE_NO_WINDOW = 0x08000000   # workers must NOT flash a console window: the
+CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0   # workers must NOT flash a console window: the
                                 # supervisors run detached (console-less), so a
                                 # child python.exe would otherwise open a new
                                 # console every scan (one per ticker per cycle)

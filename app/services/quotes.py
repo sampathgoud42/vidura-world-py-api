@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # maps to itself for both.
 SYMBOL_MAP: dict[str, tuple[str, str]] = {
     "SPX": ("^GSPC", "SPX"),
+    "VIX": ("^VIX", "VIX"),
     "BTC": ("BTC-USD", "BTCUSD"),
     "NIFTY": ("^NSEI", "NSE:NIFTY"),
     "BANKNIFTY": ("^NSEBANK", "NSE:BANKNIFTY"),
@@ -157,6 +158,56 @@ def _intraday_block(t, price: float | None) -> dict:
             }
     except Exception as exc:  # intraday extras must never sink the quote
         logger.debug("intraday block failed: %s", exc)
+    return out
+
+
+_BATCH_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_BATCH_TTL = 30.0
+
+
+def batch_quotes(tickers: list[str]) -> list[dict]:
+    """Lightweight last/prev-close for many tickers in ONE Yahoo download.
+
+    Fallback path for the Tradier desk's ticker rail when the account has no
+    Tradier keys (or Tradier does not know a symbol). Yahoo's daily bar for
+    today tracks the live price during the session, so last close == last.
+    """
+    import yfinance as yf  # deferred: heavy import
+
+    keys = [t.strip().upper() for t in tickers if t.strip()]
+    if not keys:
+        return []
+    cache_key = ",".join(keys)
+    now = time.monotonic()
+    hit = _BATCH_CACHE.get(cache_key)
+    if hit and now - hit[0] < _BATCH_TTL:
+        return hit[1]
+
+    yf_syms = [SYMBOL_MAP.get(t, (t, t))[0] for t in keys]
+    data = yf.download(yf_syms, period="5d", interval="1d", group_by="ticker",
+                       progress=False, threads=True, auto_adjust=False)
+    out: list[dict] = []
+    for ticker, yf_sym in zip(keys, yf_syms):
+        price = prev = None
+        try:
+            frame = data[yf_sym] if len(yf_syms) > 1 else data
+            closes = frame["Close"].dropna()
+            if len(closes) >= 1:
+                price = _round(closes.iloc[-1])
+            if len(closes) >= 2:
+                prev = _round(closes.iloc[-2])
+        except Exception as exc:  # one bad symbol must not sink the rail
+            logger.debug("batch quote failed for %s: %s", ticker, exc)
+        change = _round(price - prev) if price is not None and prev else None
+        out.append({
+            "symbol": ticker,
+            "price": price,
+            "prev_close": prev,
+            "change": change,
+            "change_pct": _round(100 * change / prev) if change is not None and prev else None,
+            "source": "yfinance",
+        })
+    _BATCH_CACHE[cache_key] = (time.monotonic(), out)
     return out
 
 

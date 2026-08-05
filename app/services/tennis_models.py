@@ -15,6 +15,25 @@ _TENNIS_DIR = "prediction-trade/sports/tennis"
 
 TENNIS_MODELS: list[dict] = [
     {
+        "model_id": "v6",
+        "version": "v6",
+        "name": "v1 engine · favourite-only",
+        "description": (
+            "The frozen profitable-weekend v1 engine with ONE added rule: "
+            "never buy the non-favourite. A BUY survives only when the pick "
+            "is the pre-match favourite, the match is neutral (no "
+            "favourite, or original odds within PREDICT_V6_NEUTRAL_DIFF "
+            "cents, default 11 — 55/45 or closer), or the underdog has "
+            "overtaken the favourite on live bids AND held the lead for "
+            "PREDICT_V6_FLIP_POINTS more points (default 2 — no knee-jerk "
+            "favourite flips). Built 2026-08-05 after an underdog buy "
+            "(Carpico match) took a full-stake loss."
+        ),
+        "target_markets": ["KXATPMATCH", "KXWTAMATCH", "KXCHALLENGERMATCH", "KXITFMATCH"],
+        "metrics": {"policy": "favourite-or-neutral only; underdog BUYs downgraded to WAIT"},
+        "script": f"{_TENNIS_DIR}/predict_v6.py",
+    },
+    {
         "model_id": "v5",
         "version": "v5",
         "name": "Forensics whitelist (production)",

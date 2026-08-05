@@ -1010,6 +1010,7 @@ def query_signals(
     ticker: str | None = None,
     grade_min: int | None = None,
     days: int | None = None,
+    central: bool = False,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[int, list[SuperSignal]]:
@@ -1018,6 +1019,10 @@ def query_signals(
     from sqlalchemy import func
 
     stmt = select(SuperSignal)
+    if central:
+        # only the merged A/B ledger rows — the per-engine worker rows would
+        # show every signal 2-4 times (once per confirming horizon)
+        stmt = stmt.where(SuperSignal.external_id.like("central:%"))
     if book:
         stmt = stmt.where(SuperSignal.book == book.upper())
     if category:

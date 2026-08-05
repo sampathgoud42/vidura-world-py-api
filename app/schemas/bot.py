@@ -29,7 +29,7 @@ class SportSettings(BaseModel):
     bank: float | None = Field(default=None, ge=0, description="session bankroll $ (0 = unlimited)")
     model: str | None = Field(
         default=None,
-        pattern="^v[1-5]$",
+        pattern="^v[1-6]$",
         description="prediction model version for this sport (tennis: v1-v5, "
         "default v5 — the forensics-validated whitelist)",
         examples=["v5"],

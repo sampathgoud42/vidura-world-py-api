@@ -206,7 +206,7 @@ FIRE_SALE_CENTS = 5           # emergency exit   → $0.05
 # honoured and combined with any numbered pairs.  If nothing is configured
 # the bot falls back to a single window of 06:15–10:45.
 HALT_TIMEZONE         = os.getenv("HALT_TIMEZONE",        "America/Chicago")
-HALT_MACHINE_SHUTDOWN = os.getenv("HALT_MACHINE_SHUTDOWN", "TRUE").upper() == "TRUE"
+HALT_MACHINE_SHUTDOWN = os.getenv("HALT_MACHINE_SHUTDOWN", "FALSE").upper() == "TRUE"
 
 
 def _parse_hhmm(s: str) -> _time:
@@ -744,7 +744,8 @@ async def _halt_and_shutdown(
             print(f"  [{reason_tag}] position close failed: {e}")
     if HALT_MACHINE_SHUTDOWN:
         print(f"  [{reason_tag}] Initiating machine shutdown in 30 seconds …")
-        os.system("shutdown /s /f /t 30")
+        os.system("shutdown /s /f /t 30" if os.name == "nt"
+                  else "shutdown -h +1")
     print(f"  [{reason_tag}] Bot halting now.")
 
 

@@ -131,7 +131,7 @@ def get_econ(db: Session = Depends(get_db)) -> dict:
 def get_gex0dte(db: Session = Depends(get_db)) -> dict:
     """Latest stored SPY 0DTE dealer-gamma view, with its own timestamp.
 
-    Read-only and cheap: the desk polls this every 5 minutes and it never
+    Read-only and cheap: the desk polls this every minute and it never
     touches the vendor. Refreshing is an explicit POST.
     """
     payload = svc.latest_payload(db, "gex0dte")
@@ -486,6 +486,8 @@ def get_signals(
     ticker: str | None = Query(default=None),
     grade_min: int | None = Query(default=None, ge=2, le=5, description="min eng_hot grade"),
     days: int | None = Query(default=None, ge=1, le=3660),
+    central: bool = Query(default=False,
+                          description="only merged A/B ledger rows (no per-engine worker rows)"),
     limit: int = Query(default=100, ge=1, le=2000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
@@ -497,6 +499,7 @@ def get_signals(
         ticker=ticker,
         grade_min=grade_min,
         days=days,
+        central=central,
         limit=limit,
         offset=offset,
     )

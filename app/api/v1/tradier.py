@@ -61,6 +61,99 @@ def balance(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
         client.close()
 
 
+# The desk's ticker rail, in the operator's fixed display order.
+DESK_TICKERS = ("SPX,SPY,QQQ,VIX,IWM,GLD,AAPL,TSLA,NVDA,MSFT,AMZN,MU,SNDK,"
+                "AVGO,META,GOOGL,LLY,JPM,ORCL,IBM,ONDS,IONQ,QBTS")
+
+# One shared quotes cache: the rail polls every 15s per browser tab, Tradier
+# rate-limits per token — 10s TTL keeps N tabs at one upstream call per tick.
+_QUOTES_CACHE: dict[str, tuple[float, dict]] = {}
+_QUOTES_TTL = 10.0
+
+
+def _tradier_quote_out(q: dict) -> dict:
+    def f(key):
+        v = q.get(key)
+        try:
+            return round(float(v), 2)
+        except (TypeError, ValueError):
+            return None
+    return {
+        "symbol": (q.get("symbol") or "").upper(),
+        "price": f("last"),
+        "prev_close": f("prevclose"),
+        "change": f("change"),
+        "change_pct": f("change_percentage"),
+        "source": "tradier",
+    }
+
+
+@router.get("/quotes", operation_id="getTradierQuotes")
+def desk_quotes(
+    user_id: str = Query(...),
+    symbols: str = Query(default=DESK_TICKERS, max_length=500),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Live prices for the desk's ticker rail, in the requested order.
+
+    Tradier batch quotes first (one request for the whole rail); any symbol
+    Tradier does not return — indices on the sandbox, or the whole set when
+    the account has no Tradier keys yet — is filled from a one-call yfinance
+    batch, so the rail renders before the operator ever adds keys.
+    """
+    from app.services import quotes as quotes_svc
+
+    syms, seen = [], set()
+    for s in symbols.split(","):
+        s = s.strip().upper()
+        if s and s not in seen:
+            seen.add(s)
+            syms.append(s)
+    if not syms:
+        raise HTTPException(status_code=400, detail="no symbols given")
+
+    cache_key = f"{user_id}:{','.join(syms)}"
+    import time as _t
+    hit = _QUOTES_CACHE.get(cache_key)
+    if hit and _t.monotonic() - hit[0] < _QUOTES_TTL:
+        return hit[1]
+
+    user = _user_or_404(db, user_id)
+    found: dict[str, dict] = {}
+    sources = set()
+    try:
+        client = tradier_bot.client_for(user)
+        try:
+            for q in client.quotes(syms):
+                out = _tradier_quote_out(q)
+                if out["symbol"] and out["price"] is not None:
+                    found[out["symbol"]] = out
+                    sources.add("tradier")
+        finally:
+            client.close()
+    except Exception:  # noqa: BLE001 — no keys / venue down: yfinance covers
+        pass
+
+    missing = [s for s in syms if s not in found]
+    if missing:
+        try:
+            for q in quotes_svc.batch_quotes(missing):
+                if q.get("price") is not None:
+                    found[q["symbol"]] = q
+                    sources.add("yfinance")
+        except Exception:  # noqa: BLE001 — a dead rail beats a 502 desk
+            pass
+
+    result = {
+        "source": "+".join(sorted(sources)) or "none",
+        "quotes": [found.get(s, {"symbol": s, "price": None, "prev_close": None,
+                                 "change": None, "change_pct": None,
+                                 "source": "none"}) for s in syms],
+    }
+    _QUOTES_CACHE[cache_key] = (_t.monotonic(), result)
+    return result
+
+
 @router.get("/chain", operation_id="previewTradierChain")
 def chain_preview(
     user_id: str = Query(...),
@@ -192,9 +285,73 @@ def close_position(position_id: int, user_id: str = Query(...),
         raise _translated(exc) from exc
 
 
+# ── auto-trade: opening-range level-cross watcher ───────────────────────────
+
+class AutoTradeStart(BaseModel):
+    """Omitted fields fall back to Settings (env: VIDURA_TRADIER_*)."""
+
+    user_id: str
+    strategy: str | None = Field(default=None, examples=["10min_intraday_move"])
+    tickers: str | None = Field(default=None, max_length=120,
+                                description="comma-separated, e.g. SPY,QQQ,SPX")
+    window_open: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$",
+                                    description="HH:MM CST")
+    window_close: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$",
+                                     description="HH:MM CST")
+    buy_pct: float | None = Field(default=None, gt=0, le=100)
+    tp_pct: float | None = Field(default=None, gt=0, le=500)
+    sl_pct: float | None = Field(default=None, gt=0, lt=100)
+    delta_min: float | None = Field(default=None, gt=0, lt=1)
+    delta_max: float | None = Field(default=None, gt=0, le=1)
+    min_contracts: int | None = Field(default=None, ge=1, le=1000)
+
+
+@router.post("/autotrade/start", operation_id="startTradierAutoTrade")
+def autotrade_start(payload: AutoTradeStart, db: Session = Depends(get_db)) -> dict:
+    """Arm the opening-range auto-trader for this user.
+
+    Watches the configured tickers' level crosses stamped inside the CST
+    window; a new above_10min_high (CALL) / below_10min_low (PUT) must still
+    hold after the confirmation delay, then the desk's normal managed 0DTE
+    position is opened — TP rests on the venue, SL is the monitor loop.
+    Sizing below min_contracts skips the trade.
+    """
+    from app.services import auto_trade
+
+    require_local_runtime("Arming the auto-trader")
+    _user_or_404(db, payload.user_id)
+    try:
+        return auto_trade.start(
+            payload.user_id,
+            strategy=payload.strategy, tickers=payload.tickers,
+            window_open=payload.window_open, window_close=payload.window_close,
+            buy_pct=payload.buy_pct, tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
+            delta_min=payload.delta_min, delta_max=payload.delta_max,
+            min_contracts=payload.min_contracts,
+        )
+    except auto_trade.AutoTradeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/autotrade/stop", operation_id="stopTradierAutoTrade")
+def autotrade_stop(user_id: str = Query(...)) -> dict:
+    from app.services import auto_trade
+
+    require_local_runtime("Stopping the auto-trader")
+    return auto_trade.stop(user_id)
+
+
+@router.get("/autotrade/status", operation_id="getTradierAutoTradeStatus")
+def autotrade_status(user_id: str = Query(...)) -> dict:
+    from app.services import auto_trade
+
+    return auto_trade.status(user_id)
+
+
 def _pos_out(p: TradierPosition) -> dict:
     return {
         "id": p.id, "status": p.status, "sandbox": p.sandbox,
+        "strategy": p.strategy or "Manual",
         "underlying": p.underlying, "occ_symbol": p.occ_symbol,
         "option_type": p.option_type, "strike": p.strike,
         "expiration": p.expiration, "delta_at_entry": p.delta_at_entry,

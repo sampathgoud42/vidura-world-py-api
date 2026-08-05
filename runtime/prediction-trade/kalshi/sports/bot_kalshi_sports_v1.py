@@ -1064,7 +1064,8 @@ async def _pv_target_guard(client, starting_pv: float, target_pv,
           f"{' + machine shutdown' if HALT_MACHINE_SHUTDOWN else ''}.")
     if HALT_MACHINE_SHUTDOWN:
         print("  [SPORTS TARGET-PV HALT] initiating machine shutdown in 30s …")
-        os.system("shutdown /s /f /t 30")
+        os.system("shutdown /s /f /t 30" if os.name == "nt"
+                  else "shutdown -h +1")
     _STOP.set()
 
 

@@ -1,0 +1,4 @@
+timestamp,event,ticker,side,strike,contracts,entry_cents,exit_cents,exit_reason,pnl_dollars,ret_pct,max_gain_pct,max_dd_pct,pv_after,pv_pct_used,tp_pct,sl_pct,spot_at_entry,poc_price,poc_color,minute_of_hour,net30_at_entry
+2026-08-05 06:36:02,KXBTCD-26AUG0503,KXBTCD-26AUG0503-T64299.99,no,64299.99,10,66,45,STOP_LOSS,-2.27,-31.82,3.03,31.82,47.73,10.0,20.0,30.0,64252.81,64363.12,Red,21.5,9.6
+2026-08-05 07:19:26,KXBTCD-26AUG0504,KXBTCD-26AUG0504-T64199.99,no,64199.99,30,68,82,TAKE_PROFIT,4.2,20.59,19.12,2.94,54.2,10.0,20.0,30.0,64144.79,64363.12,Red,10.5,
+2026-08-05 16:55:09,KXBTCD-26AUG0513,KXBTCD-26AUG0513-T64399.99,yes,64399.99,60,77,99,DEADLINE_FLATTEN,13.16,28.57,28.57,5.19,67.36,10.0,20.0,30.0,64537.06,64428.74,Green,15.1,17.2

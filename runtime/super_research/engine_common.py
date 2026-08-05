@@ -50,7 +50,7 @@ BASE_TF, BASE_ENGINE = "5m", "4h"    # legacy signal-id anchor (dedup continuity
 # with candle size — a 30m frame has 6x fewer bars than 5m over the same 60
 # sessions, so demanding the same absolute trade count would starve the
 # higher-timeframe engines (sqrt scaling, hard minimums below).
-MIN_TPSL = 85.0               # tp-before-sl % a config needs to stay live
+MIN_TPSL = 81.0               # tp-before-sl % a config needs to stay live
 MIN_TRADES = 6                # backtest entries needed at a 5m pair
 MIN_DECIDED = 3               # wins+stops needed (all-scratch stats are noise)
 A_TPSL = 95.0                 # tp-before-sl > this = A-book on that pair

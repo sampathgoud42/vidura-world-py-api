@@ -56,6 +56,11 @@ class TradierPosition(Base):
     tp_order_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     close_order_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
+    # who decided this trade: "Manual" for desk buys, else the auto-trader's
+    # strategy name (e.g. "10min_intraday_move")
+    strategy: Mapped[str] = mapped_column(String(64), default="Manual",
+                                          server_default="Manual")
+
     status: Mapped[str] = mapped_column(String(16), default="pending")
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     pnl_usd: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.v1 import bots, kalshi, models_tennis, super, tradier, trades, users, wellness
+from app.api.v1 import bots, kalshi, levels, models_tennis, super, tradier, trades, users, wellness
 
 api_router = APIRouter()
 api_router.include_router(users.router)
@@ -11,3 +11,4 @@ api_router.include_router(wellness.router)
 api_router.include_router(models_tennis.router)
 api_router.include_router(super.router)
 api_router.include_router(tradier.router)
+api_router.include_router(levels.router)
