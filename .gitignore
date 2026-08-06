@@ -30,3 +30,4 @@ runtime/**/all_configs.csv
 runtime/super_research/.resolve_state.json
 
 .idea/
+/app.db

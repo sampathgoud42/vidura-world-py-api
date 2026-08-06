@@ -834,23 +834,45 @@ def _recon_read_csv(ticker: str):
 
 
 async def _exchange_pnl(c, ticker: str, side: str):
-    """(realized pnl, fill count) for one market, or (None, 0) if no fills yet."""
-    key = "no_price_dollars" if (side or "yes").lower() == "no" else "yes_price_dollars"
+    """(realized pnl, fill count) for one market, or (None, 0) if no fills yet.
+
+    Kalshi records every fill as the token the account ACQUIRED — a sell of
+    yes comes back ``side=no`` at the complementary price. So each fill is a
+    cash OUTFLOW of count x fill_side_price + fee, matched yes/no pairs
+    auto-redeem for $1, and settlement revenue covers whatever was held to
+    the end. The previous held-side arithmetic inverted every NO trade's
+    P&L (found 2026-08-05: booked +8.31 on a -9.69 loss). ``side`` is kept
+    for signature compatibility; the fill's own side is authoritative.
+    """
     d = await c.req("GET", "/portfolio/fills", params={"ticker": ticker, "limit": 200})
     fills = d.get("fills", [])
     if not fills:
         return None, 0
-    pnl = 0.0
+    cash = yes_cnt = no_cnt = 0.0
     for fx in fills:
         cnt = float(fx.get("count_fp") or fx.get("count") or 0)
-        px = float(fx.get(key) or 0)
+        tok = (fx.get("side") or "yes").lower()
+        px = float(fx.get("no_price_dollars" if tok == "no" else "yes_price_dollars") or 0)
         fee = float(fx.get("fee_cost") or 0)
-        pnl += (cnt * px - fee) if fx.get("action") == "sell" else -(cnt * px + fee)
+        cash -= cnt * px + fee
+        if tok == "no":
+            no_cnt += cnt
+        else:
+            yes_cnt += cnt
+    cash += min(yes_cnt, no_cnt)          # $1 auto-redemption per matched pair
     d = await c.req("GET", "/portfolio/settlements", params={"ticker": ticker, "limit": 20})
+    n_sett = 0
     for s in d.get("settlements", []):
         if ticker in (s.get("ticker"), s.get("market_ticker")):
-            pnl += float(s.get("revenue") or 0) / 100.0
-    return round(pnl, 2), len(fills)
+            cash += float(s.get("revenue") or 0) / 100.0
+            n_sett += 1
+    if abs(yes_cnt - no_cnt) > 1e-6 and n_sett == 0:
+        # Contracts rode to settlement but the settlement record has not
+        # posted yet (it lags the close by minutes). Returning None makes
+        # _reconcile_prev_market retry next rollover instead of booking a
+        # ride-to-settlement WINNER as a full loss and debiting the bankroll.
+        return None, len(fills)
+    return round(cash, 2), len(fills)
 
 
 async def _reconcile_prev_market(c, ticker: str) -> bool:

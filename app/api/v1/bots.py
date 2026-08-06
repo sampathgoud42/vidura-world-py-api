@@ -355,6 +355,11 @@ def reconcile_open_trades(
         return reconcile_svc.reconcile(db, user, hours=hours, dry_run=not apply)
     except reconcile_svc.ReconcileError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except Exception as exc:                      # noqa: BLE001
+        # Kalshi API errors mid-pass surface as a gateway problem, not a 500;
+        # per-row commits mean finished corrections are already saved.
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"exchange error mid-pass: {exc}") from exc
 
 
 @router.get("/sports/performance", operation_id="getSportsPerformance", response_model=PerformanceSummary)

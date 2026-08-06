@@ -194,6 +194,12 @@ def _run_reconcile(hours: int) -> list[dict]:
                 # No credentials, or Kalshi unreachable. Expected on hosts
                 # without a funded account — never a reason to kill the loop.
                 out.append({"user": user.username, "error": str(exc)})
+            except Exception as exc:              # noqa: BLE001
+                # An API blip mid-pass must not starve the REMAINING users;
+                # per-row commits inside reconcile keep finished work.
+                logging.getLogger("app.reconcile").warning(
+                    "reconcile failed for %s: %s", user.username, exc)
+                out.append({"user": user.username, "error": str(exc)})
     finally:
         db.close()
     return out

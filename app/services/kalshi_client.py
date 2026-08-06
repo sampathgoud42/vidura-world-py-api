@@ -143,23 +143,39 @@ class KalshiClient:
     def exchange_status(self) -> dict[str, Any]:
         return self.request("GET", "/exchange/status")
 
+    # Hard ceiling on cursor-following: 10 pages x limit. Protects against a
+    # runaway cursor while still covering accounts far past one page.
+    _MAX_PAGES = 10
+
+    def _paged(self, path: str, key: str, params: dict[str, Any]) -> list[dict]:
+        """Follow Kalshi's cursor until exhausted (or _MAX_PAGES)."""
+        out: list[dict] = []
+        cursor: str | None = None
+        for _ in range(self._MAX_PAGES):
+            p = dict(params)
+            if cursor:
+                p["cursor"] = cursor
+            data = self.request("GET", path, params=p)
+            out.extend(data.get(key) or [])
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+        return out
+
     def positions(self, ticker: str | None = None, limit: int = 100) -> list[dict]:
         params: dict[str, Any] = {"limit": limit}
         if ticker:
             params["ticker"] = ticker
-        data = self.request("GET", "/portfolio/positions", params=params)
-        return data.get("market_positions", [])
+        return self._paged("/portfolio/positions", "market_positions", params)
 
     def fills(self, ticker: str | None = None, limit: int = 100) -> list[dict]:
         params: dict[str, Any] = {"limit": limit}
         if ticker:
             params["ticker"] = ticker
-        return self.request("GET", "/portfolio/fills", params=params).get("fills", [])
+        return self._paged("/portfolio/fills", "fills", params)
 
     def settlements(self, limit: int = 100) -> list[dict]:
-        return self.request("GET", "/portfolio/settlements", params={"limit": limit}).get(
-            "settlements", []
-        )
+        return self._paged("/portfolio/settlements", "settlements", {"limit": limit})
 
     def close(self) -> None:
         self._session.close()

@@ -335,10 +335,17 @@ def sync_trades(db: Session, user: User, bot_key: str) -> dict:
                 # same ledger under another filename must not erase P&L.
                 if mapped.get("status") == "open" and existing.status != "open":
                     continue
+                # Exchange-priced rows are locked: reconcile stamped them from
+                # fills+settlements (fee-true), and the bot's own CSV estimate
+                # must not claw the figure back on the next auto-sync.
+                existing_raw = existing.raw if isinstance(existing.raw, dict) else {}
+                locked = bool(existing_raw.get("reconciled") or existing_raw.get("fee_checked"))
                 changed = False
                 for field in ("status", "pnl_usd", "closed_at", "price_cents", "cost_usd", "raw"):
                     new = mapped.get(field)
                     if new is None or getattr(existing, field) == new:
+                        continue
+                    if locked and field in ("status", "pnl_usd", "raw"):
                         continue
                     # Same sparse-row guards as the in-file merge above.
                     if field == "pnl_usd" and new == 0 and existing.pnl_usd:
