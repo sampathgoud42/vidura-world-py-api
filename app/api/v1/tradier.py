@@ -174,6 +174,29 @@ def stream_session(user_id: str = Query(...), db: Session = Depends(get_db)) -> 
         client.close()
 
 
+@router.get("/flow", operation_id="getTradierOptionsFlow")
+def options_flow(
+    user_id: str = Query(...),
+    live: bool = Query(default=False,
+                       description="true reads chains from the PRODUCTION venue"),
+    refresh: bool = Query(default=False, description="force a sweep now"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Top option contracts by volume across the large-cap universe.
+
+    Returns the last good snapshot immediately and refreshes in the
+    background when it is stale — a 50-name chain sweep takes seconds and
+    must never sit in front of the desk's render.
+    """
+    from app.services import options_flow as flow_svc
+
+    user = _user_or_404(db, user_id)
+    try:
+        return flow_svc.snapshot(user, live=live, force=refresh)
+    except Exception as exc:                          # noqa: BLE001
+        raise _translated(exc) from exc
+
+
 @router.get("/quotes", operation_id="getTradierQuotes")
 def desk_quotes(
     user_id: str = Query(...),

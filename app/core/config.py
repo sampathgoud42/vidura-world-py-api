@@ -154,6 +154,23 @@ class Settings(BaseSettings):
     tradier_ab_zero_dte_cutoff: str = "13:00"  # CST — no 0DTE entry after this
     tradier_ab_cooldown_s: int = 3600          # 60m before this strategy re-enters a ticker
 
+    # --- options flow board (unusual activity across the large caps) ------
+    # Streaming carries no open interest, so this is chain data on a timer.
+    # One chain call per symbol per expiration: keep the universe and the
+    # expiration count honest about what that costs.
+    tradier_flow_universe: str = (
+        "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO,LLY,JPM,"
+        "V,UNH,XOM,MA,COST,HD,PG,JNJ,ABBV,WMT,"
+        "NFLX,BAC,CRM,AMD,KO,PEP,TMO,ADBE,CSCO,MRK,"
+        "ORCL,ACN,MCD,ABT,DIS,QCOM,INTC,VZ,TXN,IBM,"
+        "PFE,GE,CAT,NOW,UBER,BA,MU,PLTR,COIN,SMCI"
+    )
+    tradier_flow_expirations: int = 2          # nearest N expirations per symbol
+    tradier_flow_top: int = 10                 # contracts shown
+    tradier_flow_min_volume: int = 100         # ignore untraded contracts
+    tradier_flow_ttl_s: int = 300              # snapshot age before a refresh
+    tradier_flow_workers: int = 6              # parallel chain fetches
+
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the
