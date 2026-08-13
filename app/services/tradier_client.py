@@ -189,6 +189,19 @@ class TradierClient:
                       params={"symbols": ",".join(symbols)})
         return _as_list((d.get("quotes") or {}).get("quote"))
 
+    # ── streaming ───────────────────────────────────────────────────────────
+    def market_session(self) -> dict:
+        """A market streaming session: ``{sessionid, url}``.
+
+        Production only — the sandbox token comes back 401 "Required scope(s):
+        scope-stream". The id is valid for five minutes to CONNECT with.
+        """
+        d = self._req("POST", "/markets/events/session")
+        stream = d.get("stream") or {}
+        if not stream.get("sessionid"):
+            raise TradierError(f"no streaming session in response: {str(d)[:200]}")
+        return stream
+
     # ── orders ──────────────────────────────────────────────────────────────
     def place_option_order(self, *, underlying: str, occ_symbol: str, side: str,
                            quantity: int, order_type: str = "limit",

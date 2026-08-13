@@ -116,6 +116,64 @@ def _tradier_quote_out(q: dict) -> dict:
     }
 
 
+# The index strip. Tradier quotes SPX and VIX as indices directly, but has no
+# symbol for the Dow itself (DJI is unmatched) — DIA, the SPDR Dow ETF, is the
+# tradable proxy, labelled DOW so the strip reads the way an operator expects.
+STREAM_SYMBOLS = [
+    {"label": "SPX", "symbol": "SPX"},
+    {"label": "SPY", "symbol": "SPY"},
+    {"label": "DOW", "symbol": "DIA"},
+    {"label": "QQQ", "symbol": "QQQ"},
+    {"label": "VIX", "symbol": "VIX"},
+]
+
+
+@router.post("/stream/session", operation_id="createTradierStreamSession")
+def stream_session(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
+    """Short-lived credential for Tradier's market WebSocket, plus a seed snapshot.
+
+    Streaming is PRODUCTION-ONLY — the sandbox token is rejected with
+    "Required scope(s): scope-stream", so this always uses the live keys. That
+    is safe and deliberate: a market session can only read quotes, never place
+    an order, and paper trading against real prices is the point.
+
+    The account token never reaches the browser. What is returned is Tradier's
+    session id, which is market-data-only and must be connected within five
+    minutes; the page reconnects by asking for a fresh one.
+    """
+    require_local_runtime("Opening a Tradier market stream")
+    user = _user_or_404(db, user_id)
+    try:
+        client = tradier_bot.client_for(user, live=True)
+    except Exception as exc:                          # noqa: BLE001
+        raise _translated(exc) from exc
+    try:
+        data = client.market_session()
+        seed = []
+        try:
+            wanted = [s["symbol"] for s in STREAM_SYMBOLS]
+            by_symbol = {(q.get("symbol") or "").upper(): q
+                         for q in client.quotes(wanted)}
+            for s in STREAM_SYMBOLS:
+                q = by_symbol.get(s["symbol"])
+                seed.append({**s, **(_tradier_quote_out(q) if q else {}),
+                             "symbol": s["symbol"], "label": s["label"]})
+        except TradierError:
+            seed = [dict(s) for s in STREAM_SYMBOLS]
+        return {
+            "sessionid": data.get("sessionid"),
+            "url": data.get("url"),
+            "ws_url": "wss://ws.tradier.com/v1/markets/events",
+            "symbols": STREAM_SYMBOLS,
+            "seed": seed,
+            "venue": "live",
+        }
+    except TradierError as exc:
+        raise _translated(exc) from exc
+    finally:
+        client.close()
+
+
 @router.get("/quotes", operation_id="getTradierQuotes")
 def desk_quotes(
     user_id: str = Query(...),
