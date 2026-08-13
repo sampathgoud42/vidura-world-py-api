@@ -8,7 +8,7 @@ import pytest
 from app.core.database import SessionLocal
 from app.models import User
 from app.services import tradier_bot
-from app.services.tradier_client import TradierError
+from app.services.tradier_client import TradierCredentials, TradierError
 
 
 def _chain():
@@ -34,13 +34,17 @@ def _chain():
 class FakeTradier:
     """Scripted venue. Orders auto-increment; fills are set by the test."""
 
-    def __init__(self):
+    def __init__(self, sandbox: bool = True):
         self.orders: dict[str, dict] = {}
         self.status: dict[str, dict] = {}
         self.bid = 0.50
         self.cancel_fails: set[str] = set()
         self.cancelled: list[str] = []
         self._next = 100
+        self.creds = TradierCredentials(
+            access_token="test", account_id="TEST", sandbox=sandbox,
+            base_url=None,
+        )
 
     def balances(self):
         return {"option_buying_power": 500.0, "total_cash": 500.0,
@@ -83,7 +87,8 @@ class FakeTradier:
 @pytest.fixture()
 def fake(monkeypatch):
     venue = FakeTradier()
-    monkeypatch.setattr(tradier_bot, "client_for", lambda user: venue)
+    monkeypatch.setattr(tradier_bot, "client_for",
+                        lambda user, **kw: venue)
     return venue
 
 
@@ -244,3 +249,77 @@ def test_endpoints_roundtrip(fake, client, user):
                     params={"user_id": uid})
     assert r.status_code == 200
     assert r.json()["status"] == "failed"          # buy was still pending
+
+
+# ── venue routing / LIVE toggle ──────────────────────────────────────────────
+
+def test_normalize_base_url_fills_scheme_and_v1():
+    from app.services.tradier_client import normalize_base_url
+
+    assert (normalize_base_url("sandbox.tradier.com", sandbox=True)
+            == "https://sandbox.tradier.com/v1")
+    assert (normalize_base_url("api.tradier.com", sandbox=False)
+            == "https://api.tradier.com/v1")
+    assert (normalize_base_url("https://api.tradier.com/v1", sandbox=False)
+            == "https://api.tradier.com/v1")
+    assert (normalize_base_url("", sandbox=True)
+            == "https://sandbox.tradier.com/v1")
+
+
+def test_crossed_venue_uri_is_refused():
+    """A sandbox client pointed at the live host is the one slip that turns a
+    mock order into real money."""
+    from app.services.tradier_client import normalize_base_url
+
+    with pytest.raises(TradierError):
+        normalize_base_url("api.tradier.com", sandbox=True)
+    with pytest.raises(TradierError):
+        normalize_base_url("sandbox.tradier.com", sandbox=False)
+
+
+def test_open_position_defaults_to_sandbox(fake, db_user):
+    """No live flag anywhere -> sandbox mock order, and the row says so."""
+    db, user = db_user
+    pos = tradier_bot.open_position(db, user, symbol="SPY", side="call")
+    assert pos.sandbox is True
+
+
+def test_open_position_records_the_venue_it_used(monkeypatch, db_user):
+    db, user = db_user
+    live_venue = FakeTradier(sandbox=False)
+    monkeypatch.setattr(tradier_bot, "client_for", lambda user, **kw: live_venue)
+    pos = tradier_bot.open_position(db, user, symbol="SPY", side="call", live=True)
+    assert pos.sandbox is False
+
+
+def test_live_refused_when_server_is_paper_only(monkeypatch, db_user):
+    from app.core.config import get_settings
+
+    db, user = db_user
+    monkeypatch.setattr(get_settings(), "paper_only", True, raising=False)
+    with pytest.raises(tradier_bot.TradierBotError) as exc:
+        tradier_bot.client_for(user, live=True)
+    assert exc.value.status_code == 403
+
+
+def test_positions_filter_by_venue(client, fake, db_user, user):
+    db, u = db_user
+    tradier_bot.open_position(db, u, symbol="SPY", side="call")
+    live_venue = FakeTradier(sandbox=False)
+    import app.services.tradier_bot as tb
+    orig = tb.client_for
+    tb.client_for = lambda user, **kw: live_venue
+    try:
+        tradier_bot.open_position(db, u, symbol="QQQ", side="put", live=True)
+    finally:
+        tb.client_for = orig
+
+    uid = user["user_id"]
+    everything = client.get(f"/api/v1/tradier/positions?user_id={uid}").json()
+    sandbox = client.get(
+        f"/api/v1/tradier/positions?user_id={uid}&venue=sandbox").json()
+    live = client.get(f"/api/v1/tradier/positions?user_id={uid}&venue=live").json()
+    assert everything["total"] == sandbox["total"] + live["total"]
+    assert all(p["sandbox"] is True for p in sandbox["items"])
+    assert all(p["sandbox"] is False for p in live["items"])
+    assert live["total"] >= 1 and sandbox["total"] >= 1

@@ -55,16 +55,24 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-def client_for(user: User) -> TradierClient:
-    """Build a client for this user, environment picked by the paper gate.
+def client_for(user: User, *, live: bool = False) -> TradierClient:
+    """Build a client for this user. SANDBOX unless LIVE is asked for.
 
-    VIDURA_PAPER_ONLY=true forces the SANDBOX venue — the same gate that
-    keeps the Kalshi bots on paper. Live needs the server unlocked AND a
-    production token in the customer folder.
+    The default is deliberately the paper venue: every desk call that does not
+    name an environment (quotes, chain preview, balance) lands on sandbox, so
+    reaching the real account is always a deliberate act.
+
+    VIDURA_PAPER_ONLY=true refuses live outright rather than silently
+    downgrading it — the same contract the Kalshi bots use, and an operator
+    who asked for live money deserves to be told the server is locked.
     """
-    settings = get_settings()
+    if live and get_settings().paper_only:
+        raise TradierBotError(
+            "server is locked to paper (VIDURA_PAPER_ONLY=true) — live Tradier "
+            "orders are refused; unset it to trade the production account", 403
+        )
     creds = credentials.load_tradier_credentials(
-        user.user_root_folder, sandbox=settings.paper_only
+        user.user_root_folder, sandbox=not live
     )
     return TradierClient(creds)
 
@@ -132,8 +140,13 @@ def open_position(
     expiration: str | None = None,
     min_contracts: int = 1,
     strategy: str = "Manual",
+    live: bool = False,
 ) -> TradierPosition:
-    """Select, size and buy; the monitor takes over from there."""
+    """Select, size and buy; the monitor takes over from there.
+
+    ``live=False`` (the default) places the order on the SANDBOX venue with
+    the sandbox token — a mock order against fake money.
+    """
     symbol = symbol.strip().upper()
     side = side.strip().lower()
     if side not in ("call", "put"):
@@ -143,7 +156,8 @@ def open_position(
     if not (0 < delta_min < delta_max <= 1):
         raise TradierBotError("need 0 < delta_min < delta_max <= 1")
 
-    client = client_for(user)
+    client = client_for(user, live=live)
+    venue_sandbox = client.creds.sandbox
     try:
         bal = client.balances()
         buying_power = bal["option_buying_power"]
@@ -185,7 +199,9 @@ def open_position(
 
     pos = TradierPosition(
         user_id=user.user_id,
-        sandbox=get_settings().paper_only,
+        # The venue the order ACTUALLY went to — the monitor and the manual
+        # close read this back to reach the right account.
+        sandbox=venue_sandbox,
         underlying=symbol,
         occ_symbol=opt["symbol"],
         option_type=side,
@@ -263,19 +279,31 @@ def monitor_pass(db: Session, user: User) -> dict:
     if not rows:
         return {"checked": 0, "events": []}
 
+    # One client per VENUE, chosen by each row's own sandbox flag. Sweeping a
+    # live position against sandbox would find no such order id and finalize
+    # a real, still-open position as failed.
     events: list[str] = []
-    client = client_for(user)
+    clients: dict[bool, TradierClient] = {}
     try:
         for pos in rows:
+            want_live = not pos.sandbox
             try:
+                client = clients.get(want_live)
+                if client is None:
+                    client = clients[want_live] = client_for(user, live=want_live)
                 _monitor_one(client, pos, events)
             except TradierError as exc:
                 # transient venue trouble must not kill the sweep for the
                 # other positions; this row is retried next pass
                 events.append(f"#{pos.id}: venue error, retrying ({exc})")
+            except (TradierBotError, credentials.CredentialsError) as exc:
+                # e.g. a live row while the server is paper-locked: leave it
+                # untouched rather than mislabel it from the wrong venue
+                events.append(f"#{pos.id}: skipped ({exc})")
         db.commit()
     finally:
-        client.close()
+        for client in clients.values():
+            client.close()
     return {"checked": len(rows), "events": events}
 
 
@@ -348,7 +376,8 @@ def close_position(db: Session, user: User, position_id: int) -> TradierPosition
     if pos.status not in ACTIVE_STATUSES:
         raise TradierBotError(f"position {position_id} is {pos.status}", 409)
 
-    client = client_for(user)
+    # Close on the venue the position was opened on, never the desk's default.
+    client = client_for(user, live=not pos.sandbox)
     try:
         if pos.status == "pending" and pos.buy_order_id:
             client.cancel_order(pos.buy_order_id)

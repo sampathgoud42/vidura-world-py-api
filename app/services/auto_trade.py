@@ -105,6 +105,7 @@ def _place(w: dict, cand: dict) -> None:
             expiration=expiration,
             min_contracts=p["min_contracts"],
             strategy=p["strategy"],
+            live=p["live"],
         )
         w["attempts"].append({
             "at": f"{_now_cst():%m-%d %H:%M:%S}", "ticker": cand["ticker"],
@@ -199,10 +200,13 @@ def start(user_id: str, *, buy_pct: float | None = None,
           delta_min: float | None = None, delta_max: float | None = None,
           strategy: str | None = None, tickers: str | list[str] | None = None,
           window_open: str | None = None, window_close: str | None = None,
-          min_contracts: int | None = None) -> dict:
+          min_contracts: int | None = None, live: bool = False) -> dict:
     s = get_settings()
     params = {
         "strategy": (strategy or s.tradier_auto_strategy).strip(),
+        # Sandbox unless the desk explicitly armed LIVE. Never persisted:
+        # a restarted watcher comes back on paper.
+        "live": bool(live),
         "buy_pct": s.tradier_buy_pct if buy_pct is None else buy_pct,
         "tp_pct": s.tradier_tp_pct if tp_pct is None else tp_pct,
         "sl_pct": s.tradier_sl_pct if sl_pct is None else sl_pct,
@@ -281,6 +285,7 @@ def defaults() -> dict:
         "sl_pct": s.tradier_sl_pct,
         "min_contracts": s.tradier_auto_min_contracts,
         "confirm_s": s.tradier_auto_confirm_s,
+        "live": False,
     }
 
 

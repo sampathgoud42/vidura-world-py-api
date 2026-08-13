@@ -45,12 +45,40 @@ def _translated(exc: Exception) -> HTTPException:
     return HTTPException(status_code=500, detail=str(exc))
 
 
+@router.get("/venue", operation_id="getTradierVenue")
+def venue(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
+    """Which venues this operator can reach, for the desk's LIVE toggle.
+
+    Reports configuration only — no order can be placed from here, and the
+    tokens themselves never leave the server.
+    """
+    user = _user_or_404(db, user_id)
+    from app.core.config import get_settings
+
+    out = {"paper_only_server": get_settings().paper_only,
+           "sandbox": None, "live": None}
+    for key, is_live in (("sandbox", False), ("live", True)):
+        try:
+            creds = creds_svc.load_tradier_credentials(
+                user.user_root_folder, sandbox=not is_live)
+            out[key] = {"configured": True, "base_url": creds.base_url,
+                        "account_id": creds.account_id}
+        except Exception as exc:                      # noqa: BLE001
+            out[key] = {"configured": False, "reason": str(exc)}
+    if out["live"]["configured"] and get_settings().paper_only:
+        out["live"]["reason"] = "server locked to paper (VIDURA_PAPER_ONLY)"
+    return out
+
+
 @router.get("/balance", operation_id="getTradierBalance")
-def balance(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
+def balance(user_id: str = Query(...),
+            live: bool = Query(default=False,
+                               description="true reads the PRODUCTION account"),
+            db: Session = Depends(get_db)) -> dict:
     """Account equity and option buying power — the sizing base."""
     user = _user_or_404(db, user_id)
     try:
-        client = tradier_bot.client_for(user)
+        client = tradier_bot.client_for(user, live=live)
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc
     try:
@@ -92,6 +120,8 @@ def _tradier_quote_out(q: dict) -> dict:
 def desk_quotes(
     user_id: str = Query(...),
     symbols: str = Query(default=DESK_TICKERS, max_length=500),
+    live: bool = Query(default=False,
+                       description="true quotes from the PRODUCTION venue"),
     db: Session = Depends(get_db),
 ) -> dict:
     """Live prices for the desk's ticker rail, in the requested order.
@@ -112,7 +142,7 @@ def desk_quotes(
     if not syms:
         raise HTTPException(status_code=400, detail="no symbols given")
 
-    cache_key = f"{user_id}:{','.join(syms)}"
+    cache_key = f"{user_id}:{'live' if live else 'sbx'}:{','.join(syms)}"
     import time as _t
     hit = _QUOTES_CACHE.get(cache_key)
     if hit and _t.monotonic() - hit[0] < _QUOTES_TTL:
@@ -122,7 +152,7 @@ def desk_quotes(
     found: dict[str, dict] = {}
     sources = set()
     try:
-        client = tradier_bot.client_for(user)
+        client = tradier_bot.client_for(user, live=live)
         try:
             for q in client.quotes(syms):
                 out = _tradier_quote_out(q)
@@ -162,6 +192,8 @@ def chain_preview(
     delta_min: float = Query(default=tradier_bot.DEFAULT_DELTA_MIN, gt=0, lt=1),
     delta_max: float = Query(default=tradier_bot.DEFAULT_DELTA_MAX, gt=0, le=1),
     expiration: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    live: bool = Query(default=False,
+                       description="true prices from the PRODUCTION venue"),
     db: Session = Depends(get_db),
 ) -> dict:
     """What WOULD be traded: the delta-band candidates and the pick.
@@ -171,7 +203,7 @@ def chain_preview(
     """
     user = _user_or_404(db, user_id)
     try:
-        client = tradier_bot.client_for(user)
+        client = tradier_bot.client_for(user, live=live)
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc
     try:
@@ -218,11 +250,19 @@ class OpenRequest(BaseModel):
                           description="cancel the TP and sell when the bid is this % below entry")
     expiration: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$",
                                    description="YYYY-MM-DD; omit for the nearest listed")
+    live: bool = Field(default=False,
+                       description="false (default) places a MOCK order on the "
+                                   "Tradier sandbox; true spends real money on "
+                                   "the production account")
 
 
 @router.post("/positions", operation_id="openTradierPosition")
 def open_position(payload: OpenRequest, db: Session = Depends(get_db)) -> dict:
-    """Pick by delta, size by balance %, buy, then manage TP/SL."""
+    """Pick by delta, size by balance %, buy, then manage TP/SL.
+
+    Sandbox unless ``live`` is explicitly true — the desk's LIVE toggle is the
+    only thing that routes an order to the production account.
+    """
     require_local_runtime("Placing a Tradier order")
     user = _user_or_404(db, payload.user_id)
     try:
@@ -231,7 +271,7 @@ def open_position(payload: OpenRequest, db: Session = Depends(get_db)) -> dict:
             symbol=payload.symbol, side=payload.side, buy_pct=payload.buy_pct,
             delta_min=payload.delta_min, delta_max=payload.delta_max,
             tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
-            expiration=payload.expiration,
+            expiration=payload.expiration, live=payload.live,
         )
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc
@@ -243,6 +283,8 @@ def list_positions(
     user_id: str = Query(...),
     status: str = Query(default="all",
                         pattern="^(all|active|pending|open|tp_filled|sl_sold|closed|failed)$"),
+    venue: str = Query(default="all", pattern="^(all|live|sandbox)$",
+                       description="filter by the venue the position was opened on"),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -252,6 +294,10 @@ def list_positions(
         stmt = stmt.where(TradierPosition.status.in_(tradier_bot.ACTIVE_STATUSES))
     elif status != "all":
         stmt = stmt.where(TradierPosition.status == status)
+    if venue == "live":
+        stmt = stmt.where(TradierPosition.sandbox.is_(False))
+    elif venue == "sandbox":
+        stmt = stmt.where(TradierPosition.sandbox.is_(True))
     rows = list(db.scalars(
         stmt.order_by(TradierPosition.opened_at.desc()).limit(limit)
     ).all())
@@ -304,6 +350,9 @@ class AutoTradeStart(BaseModel):
     delta_min: float | None = Field(default=None, gt=0, lt=1)
     delta_max: float | None = Field(default=None, gt=0, le=1)
     min_contracts: int | None = Field(default=None, ge=1, le=1000)
+    live: bool = Field(default=False,
+                       description="false (default) arms the watcher on the "
+                                   "SANDBOX venue; true trades real money")
 
 
 @router.post("/autotrade/start", operation_id="startTradierAutoTrade")
@@ -327,7 +376,7 @@ def autotrade_start(payload: AutoTradeStart, db: Session = Depends(get_db)) -> d
             window_open=payload.window_open, window_close=payload.window_close,
             buy_pct=payload.buy_pct, tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
             delta_min=payload.delta_min, delta_max=payload.delta_max,
-            min_contracts=payload.min_contracts,
+            min_contracts=payload.min_contracts, live=payload.live,
         )
     except auto_trade.AutoTradeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

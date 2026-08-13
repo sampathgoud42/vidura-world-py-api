@@ -1,14 +1,16 @@
 """Thin synchronous client for the Tradier brokerage REST API.
 
-Two environments, mapped onto the desk's paper/live contract:
+Two environments, each with its OWN host, token and account id, configured in
+the customer .env:
 
-    paper -> https://sandbox.tradier.com/v1   (Tradier's own paper venue)
-    live  -> https://api.tradier.com/v1
+    sandbox -> TRADIER_SANDBOX_URI / _TOKEN / _ACCOUNT_ID   (Tradier's paper venue)
+    live    -> TRADIER_PROD_URI    / _TOKEN / _ACCOUNT_ID
 
-The sandbox is a REAL separate venue with its own token, not a dry-run flag —
-so a paper session can never leak an order into the live account by a flag
-being read wrong. VIDURA_PAPER_ONLY therefore gates which BASE URL a client
-may be built for, the same place the Kalshi bots gate live mode.
+The sandbox is a REAL separate venue, not a dry-run flag — so a paper session
+can never leak an order into the live account by a flag being read wrong.
+Two gates keep it that way: VIDURA_PAPER_ONLY pins every client to sandbox
+when set, and ``normalize_base_url`` refuses to build a client whose host
+belongs to the other environment.
 
 Quirk this module absorbs so callers never see it: Tradier collapses
 single-element arrays into bare objects ("quotes.quote" is a dict for one
@@ -20,13 +22,16 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
 logger = logging.getLogger(__name__)
 
-PROD_BASE = "https://api.tradier.com/v1"
-SANDBOX_BASE = "https://sandbox.tradier.com/v1"
+PROD_HOST = "api.tradier.com"
+SANDBOX_HOST = "sandbox.tradier.com"
+PROD_BASE = f"https://{PROD_HOST}/v1"
+SANDBOX_BASE = f"https://{SANDBOX_HOST}/v1"
 TIMEOUT_S = 20
 
 
@@ -45,17 +50,56 @@ def _as_list(node: Any) -> list:
     return node if isinstance(node, list) else [node]
 
 
+def normalize_base_url(uri: str | None, *, sandbox: bool) -> str:
+    """Turn a configured host into a full API base, and refuse a crossed venue.
+
+    The customer .env carries bare hosts (``sandbox.tradier.com``), so scheme
+    and the ``/v1`` suffix are filled in here. The host check is the load-
+    bearing part: with BOTH environments configured in one file, a copy-paste
+    slip in TRADIER_SANDBOX_URI is otherwise an order on the live account.
+    """
+    want_host = SANDBOX_HOST if sandbox else PROD_HOST
+    if not (uri or "").strip():
+        return SANDBOX_BASE if sandbox else PROD_BASE
+    raw = uri.strip().rstrip("/")
+    if "://" not in raw:
+        raw = f"https://{raw}"
+    parsed = urlparse(raw)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise TradierError(f"unusable Tradier URI: {uri!r}")
+    other_host = PROD_HOST if sandbox else SANDBOX_HOST
+    if host == other_host:
+        raise TradierError(
+            f"refusing to build a {'sandbox' if sandbox else 'live'} Tradier "
+            f"client pointed at {host} — check TRADIER_"
+            f"{'SANDBOX' if sandbox else 'PROD'}_URI in the customer .env"
+        )
+    if host != want_host:
+        logger.warning("Tradier %s venue on non-standard host %s",
+                       "sandbox" if sandbox else "live", host)
+    path = parsed.path.rstrip("/")
+    if not path:
+        path = "/v1"
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
 @dataclass
 class TradierCredentials:
     access_token: str
     account_id: str
     sandbox: bool
+    # Full API base, already normalized. None falls back to the built-in host
+    # for this environment.
+    base_url: str | None = None
 
 
 class TradierClient:
     def __init__(self, creds: TradierCredentials):
         self.creds = creds
-        self.base = SANDBOX_BASE if creds.sandbox else PROD_BASE
+        # Re-validated here, not just at load: every path that builds a client
+        # goes through this constructor.
+        self.base = normalize_base_url(creds.base_url, sandbox=creds.sandbox)
         self._s = requests.Session()
         self._s.headers.update({
             "Authorization": f"Bearer {creds.access_token}",

@@ -5,11 +5,15 @@ def test_list_tennis_models(client):
     resp = client.get("/api/v1/models/tennis")
     assert resp.status_code == 200
     models = {m["model_id"]: m for m in resp.json()}
-    assert set(models) == {"v1", "v2", "v3", "v4", "v5"}
+    assert set(models) == {"v1", "v2", "v3", "v4", "v5", "v6"}
     v5 = models["v5"]
     assert "whitelist" in v5["name"].lower() or "forensics" in v5["name"].lower()
     assert v5["metrics"]["holdout_roi_pct"] == 30
     assert "KXATPMATCH" in v5["target_markets"]
+    # v6 is v5's successor for tennis: the v1 engine under a favourite-only
+    # buy policy, listed first so the desk offers it above the older models.
+    assert resp.json()[0]["model_id"] == "v6"
+    assert "favourite" in models["v6"]["name"].lower()
 
 
 def test_predictions_roundtrip(client):
