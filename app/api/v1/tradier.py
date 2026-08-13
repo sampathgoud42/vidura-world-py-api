@@ -423,6 +423,15 @@ class AutoTradeStart(BaseModel):
     delta_min: float | None = Field(default=None, gt=0, lt=1)
     delta_max: float | None = Field(default=None, gt=0, le=1)
     min_contracts: int | None = Field(default=None, ge=1, le=1000)
+    # --- ab_signal_options only ---
+    books: str | None = Field(default=None, examples=["A,B"],
+                              description="which super-signal books to act on")
+    dte_max: int | None = Field(default=None, ge=0, le=30,
+                                description="furthest expiration to consider, in days")
+    zero_dte_cutoff: str | None = Field(
+        default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
+        description="CST time after which same-day expirations are not entered",
+        examples=["13:00"])
     live: bool = Field(default=False,
                        description="false (default) arms the watcher on the "
                                    "SANDBOX venue; true trades real money")
@@ -450,6 +459,8 @@ def autotrade_start(payload: AutoTradeStart, db: Session = Depends(get_db)) -> d
             buy_pct=payload.buy_pct, tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
             delta_min=payload.delta_min, delta_max=payload.delta_max,
             min_contracts=payload.min_contracts, live=payload.live,
+            books=payload.books, dte_max=payload.dte_max,
+            zero_dte_cutoff=payload.zero_dte_cutoff,
         )
     except auto_trade.AutoTradeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

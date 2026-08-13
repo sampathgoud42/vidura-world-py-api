@@ -139,6 +139,20 @@ class Settings(BaseSettings):
     tradier_auto_poll_s: int = 20              # level-snapshot poll cadence
     tradier_auto_min_contracts: int = 1        # sized below this -> skip trade
 
+    # --- auto-trade: A/B super-signal options strategy -------------------
+    # LONG signal -> CALL, SHORT -> PUT. The entry is not taken on the
+    # signal itself: the chosen contract's BID is sampled for a while and
+    # bought only while it is holding up, never into a fade.
+    tradier_ab_books: str = "A,B"              # which super-signal books to act on
+    tradier_ab_sample_s: int = 15              # bid sampling cadence
+    tradier_ab_observe_min_s: int = 300        # 5m: earliest a decision is made
+    tradier_ab_observe_max_s: int = 600        # 10m: end of the first look
+    tradier_ab_stable_s: int = 150             # 2.5m trailing window in the rescue phase
+    tradier_ab_max_wait_s: int = 1800          # 30m: give up on a fading bid
+    tradier_ab_tol_pct: float = 2.0            # move under this is "stable", not a trend
+    tradier_ab_dte_max: int = 6                # today .. today+6 expirations
+    tradier_ab_zero_dte_cutoff: str = "13:00"  # CST — no 0DTE entry after this
+
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and
     # order-placing endpoints record trades locally instead of hitting the

@@ -1,4 +1,23 @@
-"""Auto-trade: the opening-range level-cross strategy, one watcher per user.
+"""Auto-trade: one watcher per user, running one of two strategies.
+
+``ab_signal_options`` — A/B super signals into options.
+  A new LONG signal buys a CALL, a SHORT buys a PUT, on that signal's own
+  ticker, picked from the same delta band the desk uses by hand.
+
+  The signal does NOT place the order. The chosen contract's BID is sampled
+  and watched first: after 5 minutes (up to 10) it is bought only while that
+  bid is rising or stable. A fading bid is not thrown away — the watcher
+  keeps looking and takes it the moment the trailing 2-3 minute window turns
+  steady again, giving up after ab_max_wait_s. Buying a premium that is
+  already melting is the mistake this whole phase exists to prevent.
+
+  Expirations run from today out to ab_dte_max (6) days. Same-day contracts
+  are entered ONLY before ab_zero_dte_cutoff (13:00 CST) — checked twice,
+  once so an observation that cannot finish in time never starts, and again
+  at the moment of the order. TP 15% rests on the venue, SL 30% is the
+  monitor loop, exactly as with a manual position.
+
+``10min_intraday_move`` — the original opening-range level-cross strategy.
 
 Armed by the desk's AUTO TRADE button (which opens a form: strategy,
 tickers, CST time window, buy/tp/sl %, min contracts). Every poll it reads
@@ -47,9 +66,100 @@ logger = logging.getLogger(__name__)
 
 CST = ZoneInfo("America/Chicago")
 
-STRATEGIES = ("10min_intraday_move",)
+STRATEGIES = ("10min_intraday_move", "ab_signal_options")
 SIGNAL_SIDE = {"above_10min_high": "call", "below_10min_low": "put"}
+# A/B super signals: the direction IS the option side.
+AB_SIDE = {"LONG": "call", "SHORT": "put"}
 _HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+# ── A/B strategy: pure decision helpers (no I/O, unit-tested) ───────────────
+
+def bid_trend(samples: list[float], *, tol_pct: float) -> str:
+    """``rising`` | ``stable`` | ``falling`` | ``unknown`` for a bid series.
+
+    Falling is not only "ended lower": a bid that spiked and gave the move
+    back is fading too, which is exactly the entry this strategy exists to
+    avoid. Anything inside the tolerance either way is stable.
+    """
+    pts = [float(x) for x in samples if x is not None and float(x) > 0]
+    if len(pts) < 2:
+        return "unknown"
+    first, last, peak = pts[0], pts[-1], max(pts)
+    up = first * (1 + tol_pct / 100.0)
+    down = first * (1 - tol_pct / 100.0)
+    # gave back more than twice the tolerance from the window's peak
+    if last < peak * (1 - 2 * tol_pct / 100.0):
+        return "falling"
+    if last > up:
+        return "rising"
+    if last < down:
+        return "falling"
+    return "stable"
+
+
+def choose_expiration(expirations, today, *, dte_max: int,
+                      allow_zero_dte: bool) -> tuple[str | None, int | None]:
+    """Nearest listed expiry within ``today .. today + dte_max``.
+
+    0DTE is skipped entirely once the CST cutoff has passed — the operator's
+    rule is that same-day contracts are only entered early, when there is
+    still session left for the move to happen.
+    """
+    from datetime import date as _date
+
+    best = None
+    for e in expirations or []:
+        try:
+            d = _date.fromisoformat(str(e))
+        except (TypeError, ValueError):
+            continue
+        dte = (d - today).days
+        if dte < 0 or dte > dte_max:
+            continue
+        if dte == 0 and not allow_zero_dte:
+            continue
+        if best is None or dte < best[1]:
+            best = (str(e), dte)
+    return best if best else (None, None)
+
+
+def ab_decision(obs: dict, *, now_mono: float, p: dict) -> tuple[str, str]:
+    """``(action, why)`` for one observation — ``buy`` | ``wait`` | ``skip``.
+
+    Phase 1 runs to observe_min_s and buys a bid that is rising or stable.
+    A fading bid is not rejected outright: phase 2 keeps watching and takes
+    it the moment the TRAILING stable window turns rising or stable, up to
+    max_wait_s. That is the operator's "else wait for the bid to go up or be
+    stable for 2-3 minutes".
+    """
+    samples = obs["samples"]                  # [(mono_ts, bid)]
+    elapsed = now_mono - obs["started"]
+    if len(samples) < 2:
+        if elapsed > p["ab_max_wait_s"]:
+            return "skip", "no usable bid samples"
+        return "wait", "sampling"
+
+    if elapsed < p["ab_observe_min_s"]:
+        return "wait", f"observing {int(elapsed)}s/{p['ab_observe_min_s']}s"
+
+    tol = p["ab_tol_pct"]
+    whole = bid_trend([b for _, b in samples], tol_pct=tol)
+    if elapsed <= p["ab_observe_max_s"]:
+        if whole in ("rising", "stable"):
+            return "buy", f"bid {whole} over {int(elapsed)}s"
+        return "wait", f"bid {whole} — holding off"
+
+    # phase 2: judge only the trailing window
+    cutoff = now_mono - p["ab_stable_s"]
+    recent = [b for ts, b in samples if ts >= cutoff]
+    trailing = bid_trend(recent, tol_pct=tol)
+    if trailing in ("rising", "stable") and len(recent) >= 2:
+        return "buy", (f"bid {trailing} for the last "
+                       f"{p['ab_stable_s'] // 60}m after fading")
+    if elapsed > p["ab_max_wait_s"]:
+        return "skip", f"bid never steadied within {p['ab_max_wait_s'] // 60}m"
+    return "wait", f"bid {trailing} in the trailing window"
 
 _WATCHERS: dict[str, dict] = {}      # user_id -> watcher record
 _LOCK = threading.Lock()
@@ -136,6 +246,217 @@ def _place(w: dict, cand: dict) -> None:
         db.close()
 
 
+def _ab_signals(p: dict) -> list[dict]:
+    """New-first A/B super signals for the configured tickers and books."""
+    from app.core.database import SessionLocal
+    from app.services import super_research
+
+    db = SessionLocal()
+    try:
+        _total, rows = super_research.query_signals(
+            db, central=True, days=1, limit=200)
+        out = []
+        for r in rows:
+            tkr = (r.ticker or "").upper()
+            book = (r.book or "").upper()
+            direction = (r.direction or "").upper()
+            if tkr not in p["tickers"] or book not in p["ab_books"]:
+                continue
+            if direction not in AB_SIDE:
+                continue
+            out.append({"ticker": tkr, "book": book, "direction": direction,
+                        "side": AB_SIDE[direction],
+                        "logged_at": str(r.logged_at or ""),
+                        "grade": r.grade, "id": r.id})
+        return out
+    finally:
+        db.close()
+
+
+def _ab_open_observation(w: dict, sig: dict) -> None:
+    """Pick the contract this signal would trade and start sampling its bid."""
+    from app.core.database import SessionLocal
+    from app.models import User
+    from app.services import tradier_bot
+
+    p = w["params"]
+    now = _now_cst()
+    db = SessionLocal()
+    try:
+        user = db.get(User, w["user_id"])
+        if user is None:
+            raise AutoTradeError("user vanished")
+        client = tradier_bot.client_for(user, live=p["live"])
+        try:
+            exps = client.expirations(sig["ticker"])
+            # Do not even start a 0DTE observation that cannot finish before
+            # the cutoff — it would only ever end in a skip.
+            latest_decision = now + timedelta(seconds=p["ab_observe_max_s"])
+            allow_zero = f"{latest_decision:%H:%M}" < p["ab_zero_dte_cutoff"]
+            expiration, dte = choose_expiration(
+                exps, now.date(), dte_max=p["ab_dte_max"],
+                allow_zero_dte=allow_zero)
+            if expiration is None:
+                _log_event(w, f"no expiry within {p['ab_dte_max']}d for "
+                              f"{sig['ticker']} (0DTE allowed: {allow_zero}) — skipped")
+                return
+            chain = client.chain(sig["ticker"], expiration)
+            opt = tradier_bot.pick_contract(chain, sig["side"],
+                                            p["delta_min"], p["delta_max"])
+            if opt is None:
+                _log_event(w, f"no {sig['side']} on {sig['ticker']} {expiration} "
+                              f"in delta {p['delta_min']:g}-{p['delta_max']:g} — skipped")
+                return
+            bid = float(opt.get("bid") or 0)
+        finally:
+            client.close()
+    except Exception as exc:                      # noqa: BLE001
+        _log_event(w, f"could not stage {sig['ticker']}: {exc}")
+        return
+    finally:
+        db.close()
+
+    w["observing"].append({
+        "ticker": sig["ticker"], "book": sig["book"], "side": sig["side"],
+        "direction": sig["direction"], "occ_symbol": opt["symbol"],
+        "expiration": expiration, "dte": dte,
+        "started": time.monotonic(), "samples": [(time.monotonic(), bid)],
+        "opened_clock": f"{now:%H:%M:%S}",
+    })
+    _log_event(w, f"{sig['book']}-book {sig['direction']} {sig['ticker']} -> "
+                  f"{sig['side'].upper()} {opt['symbol']} ({dte}DTE) bid {bid:.2f} "
+                  f"— observing {p['ab_observe_min_s'] // 60}-"
+                  f"{p['ab_observe_max_s'] // 60}m")
+
+
+def _ab_place(w: dict, obs: dict, why: str) -> None:
+    """A steady bid -> the desk's normal managed position on that contract."""
+    from app.core.database import SessionLocal
+    from app.models import User
+    from app.services import tradier_bot
+
+    p = w["params"]
+    db = SessionLocal()
+    try:
+        user = db.get(User, w["user_id"])
+        if user is None:
+            raise AutoTradeError("user vanished")
+        pos = tradier_bot.open_position(
+            db, user,
+            symbol=obs["ticker"], side=obs["side"],
+            buy_pct=p["buy_pct"],
+            delta_min=p["delta_min"], delta_max=p["delta_max"],
+            tp_pct=p["tp_pct"], sl_pct=p["sl_pct"],
+            expiration=obs["expiration"],
+            min_contracts=p["min_contracts"],
+            strategy=p["strategy"],
+            live=p["live"],
+        )
+        w["attempts"].append({
+            "at": f"{_now_cst():%m-%d %H:%M:%S}", "ticker": obs["ticker"],
+            "signal": f"{obs['book']}-{obs['direction']}", "side": obs["side"],
+            "status": "placed", "position_id": pos.id,
+            "occ_symbol": pos.occ_symbol, "contracts": pos.contracts,
+            "why": why,
+        })
+        _log_event(w, f"PLACED {obs['ticker']} {obs['side'].upper()} x{pos.contracts} "
+                      f"({pos.occ_symbol}) — {why}")
+    except tradier_bot.TradierBotError as exc:
+        skipped = "min_contracts" in str(exc)
+        w["attempts"].append({
+            "at": f"{_now_cst():%m-%d %H:%M:%S}", "ticker": obs["ticker"],
+            "signal": f"{obs['book']}-{obs['direction']}", "side": obs["side"],
+            "status": "skipped" if skipped else "failed", "error": str(exc)[:300],
+        })
+        _log_event(w, f"{'SKIPPED' if skipped else 'FAILED'} {obs['ticker']}: {exc}")
+    except Exception as exc:                      # noqa: BLE001
+        _log_event(w, f"FAILED {obs['ticker']}: {exc}")
+    finally:
+        db.close()
+
+
+def _run_ab(w: dict) -> None:
+    """A/B super signal -> observed-bid options entry."""
+    from app.core.database import SessionLocal
+    from app.models import User
+    from app.services import tradier_bot
+
+    p = w["params"]
+    baseline = False
+    while not w["stop"].is_set():
+        try:
+            now = _now_cst()
+            sigs = _ab_signals(p)
+
+            # Everything already on the books when the watcher arms is
+            # history, not a trigger — otherwise arming fires a burst of
+            # stale entries.
+            if not baseline:
+                baseline = True
+                w["seen"] = {(s["book"], s["ticker"], s["logged_at"]) for s in sigs}
+                _log_event(w, f"armed on {'/'.join(sorted(p['ab_books']))}-book signals "
+                              f"for {','.join(p['tickers'])} · 0DTE until "
+                              f"{p['ab_zero_dte_cutoff']} CST, then up to "
+                              f"{p['ab_dte_max']}DTE")
+
+            for s in sigs:
+                key = (s["book"], s["ticker"], s["logged_at"])
+                if key in w["seen"]:
+                    continue
+                w["seen"].add(key)
+                if any(o["ticker"] == s["ticker"] and o["side"] == s["side"]
+                       for o in w["observing"]):
+                    _log_event(w, f"already observing {s['ticker']} {s['side']} — ignored")
+                    continue
+                _ab_open_observation(w, s)
+
+            # sample every observation's bid, then decide
+            if w["observing"]:
+                db = SessionLocal()
+                try:
+                    user = db.get(User, w["user_id"])
+                    client = tradier_bot.client_for(user, live=p["live"]) if user else None
+                finally:
+                    db.close()
+                if client is not None:
+                    try:
+                        for obs in list(w["observing"]):
+                            try:
+                                q = client.quote(obs["occ_symbol"])
+                                bid = float(q.get("bid") or 0)
+                                if bid > 0:
+                                    obs["samples"].append((time.monotonic(), bid))
+                                    del obs["samples"][:-200]
+                            except Exception as exc:      # noqa: BLE001
+                                _log_event(w, f"{obs['ticker']} quote failed: {exc}")
+                            action, why = ab_decision(obs, now_mono=time.monotonic(), p=p)
+                            if action == "wait":
+                                obs["why"] = why
+                                continue
+                            w["observing"].remove(obs)
+                            if action == "skip":
+                                w["attempts"].append({
+                                    "at": f"{now:%m-%d %H:%M:%S}", "ticker": obs["ticker"],
+                                    "signal": f"{obs['book']}-{obs['direction']}",
+                                    "side": obs["side"], "status": "skipped",
+                                    "error": why,
+                                })
+                                _log_event(w, f"DROPPED {obs['ticker']} — {why}")
+                                continue
+                            # last gate: the cutoff may have passed while we watched
+                            if obs["dte"] == 0 and f"{now:%H:%M}" >= p["ab_zero_dte_cutoff"]:
+                                _log_event(w, f"DROPPED {obs['ticker']} 0DTE — past "
+                                              f"{p['ab_zero_dte_cutoff']} CST cutoff")
+                                continue
+                            _ab_place(w, obs, why)
+                    finally:
+                        client.close()
+        except Exception as exc:                  # noqa: BLE001
+            _log_event(w, f"watcher error: {exc}")
+        w["stop"].wait(p["ab_sample_s"])
+    _log_event(w, "stopped")
+
+
 def _run(w: dict) -> None:
     from app.services import levels as levels_svc
 
@@ -200,7 +521,10 @@ def start(user_id: str, *, buy_pct: float | None = None,
           delta_min: float | None = None, delta_max: float | None = None,
           strategy: str | None = None, tickers: str | list[str] | None = None,
           window_open: str | None = None, window_close: str | None = None,
-          min_contracts: int | None = None, live: bool = False) -> dict:
+          min_contracts: int | None = None, live: bool = False,
+          books: str | list[str] | None = None,
+          dte_max: int | None = None,
+          zero_dte_cutoff: str | None = None) -> dict:
     s = get_settings()
     params = {
         "strategy": (strategy or s.tradier_auto_strategy).strip(),
@@ -218,7 +542,21 @@ def start(user_id: str, *, buy_pct: float | None = None,
                           if min_contracts is None else int(min_contracts)),
         "confirm_s": s.tradier_auto_confirm_s,
         "poll_s": max(5, s.tradier_auto_poll_s),
+        # --- ab_signal_options ---
+        "ab_sample_s": max(5, s.tradier_ab_sample_s),
+        "ab_observe_min_s": s.tradier_ab_observe_min_s,
+        "ab_observe_max_s": s.tradier_ab_observe_max_s,
+        "ab_stable_s": s.tradier_ab_stable_s,
+        "ab_max_wait_s": s.tradier_ab_max_wait_s,
+        "ab_tol_pct": s.tradier_ab_tol_pct,
+        "ab_dte_max": (s.tradier_ab_dte_max if dte_max is None else int(dte_max)),
+        "ab_zero_dte_cutoff": (zero_dte_cutoff
+                               or s.tradier_ab_zero_dte_cutoff).strip(),
     }
+    raw_books = books if books is not None else s.tradier_ab_books
+    if isinstance(raw_books, str):
+        raw_books = raw_books.split(",")
+    params["ab_books"] = [b.strip().upper() for b in raw_books if b.strip()]
     raw = tickers if tickers is not None else s.tradier_auto_tickers
     if isinstance(raw, str):
         raw = raw.split(",")
@@ -242,6 +580,13 @@ def start(user_id: str, *, buy_pct: float | None = None,
         raise AutoTradeError("need 0 < delta_min < delta_max <= 1")
     if params["min_contracts"] < 1:
         raise AutoTradeError("min_contracts must be >= 1")
+    if params["strategy"] == "ab_signal_options":
+        if not params["ab_books"] or any(b not in ("A", "B") for b in params["ab_books"]):
+            raise AutoTradeError("books must be A, B, or A,B")
+        if not _HHMM.match(params["ab_zero_dte_cutoff"]):
+            raise AutoTradeError("zero_dte_cutoff must be HH:MM (24h CST)")
+        if not (0 <= params["ab_dte_max"] <= 30):
+            raise AutoTradeError("dte_max must be between 0 and 30")
 
     with _LOCK:
         existing = _WATCHERS.get(user_id)
@@ -253,10 +598,12 @@ def start(user_id: str, *, buy_pct: float | None = None,
             "user_id": user_id,
             "params": params,
             "stop": threading.Event(),
-            "seen": set(), "pending": [], "attempts": [], "events": [],
+            "seen": set(), "pending": [], "observing": [],
+            "attempts": [], "events": [],
             "started_at": f"{_now_cst():%m-%d %H:%M:%S}",
         }
-        w["thread"] = threading.Thread(target=_run, args=(w,), daemon=True,
+        loop = _run_ab if params["strategy"] == "ab_signal_options" else _run
+        w["thread"] = threading.Thread(target=loop, args=(w,), daemon=True,
                                        name=f"autotrade-{user_id[:8]}")
         _WATCHERS[user_id] = w
         w["thread"].start()
@@ -286,6 +633,12 @@ def defaults() -> dict:
         "min_contracts": s.tradier_auto_min_contracts,
         "confirm_s": s.tradier_auto_confirm_s,
         "live": False,
+        "books": s.tradier_ab_books,
+        "dte_max": s.tradier_ab_dte_max,
+        "zero_dte_cutoff": s.tradier_ab_zero_dte_cutoff,
+        "observe_min_s": s.tradier_ab_observe_min_s,
+        "observe_max_s": s.tradier_ab_observe_max_s,
+        "stable_s": s.tradier_ab_stable_s,
     }
 
 
@@ -303,6 +656,16 @@ def status(user_id: str) -> dict:
         "tickers": p["tickers"],
         "pending": [{k: x[k] for k in ("ticker", "signal", "time", "confirm_clock")}
                     for x in w["pending"]],
+        # contracts whose bid is being watched before committing
+        "observing": [{
+            "ticker": o["ticker"], "side": o["side"], "book": o["book"],
+            "direction": o["direction"], "occ_symbol": o["occ_symbol"],
+            "expiration": o["expiration"], "dte": o["dte"],
+            "since": o["opened_clock"], "samples": len(o["samples"]),
+            "bid": (o["samples"][-1][1] if o["samples"] else None),
+            "first_bid": (o["samples"][0][1] if o["samples"] else None),
+            "why": o.get("why", "sampling"),
+        } for o in w.get("observing", [])],
         "attempts": w["attempts"][-20:],
         "events": w["events"][:12],
         "paper": get_settings().paper_only,
