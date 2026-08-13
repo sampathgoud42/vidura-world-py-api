@@ -432,6 +432,11 @@ class AutoTradeStart(BaseModel):
         default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$",
         description="CST time after which same-day expirations are not entered",
         examples=["13:00"])
+    cooldown_min: int | None = Field(
+        default=None, ge=0, le=1440,
+        description="minutes this strategy must wait before re-entering the "
+                    "same ticker (0 disables)",
+        examples=[60])
     live: bool = Field(default=False,
                        description="false (default) arms the watcher on the "
                                    "SANDBOX venue; true trades real money")
@@ -461,6 +466,7 @@ def autotrade_start(payload: AutoTradeStart, db: Session = Depends(get_db)) -> d
             min_contracts=payload.min_contracts, live=payload.live,
             books=payload.books, dte_max=payload.dte_max,
             zero_dte_cutoff=payload.zero_dte_cutoff,
+            cooldown_min=payload.cooldown_min,
         )
     except auto_trade.AutoTradeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

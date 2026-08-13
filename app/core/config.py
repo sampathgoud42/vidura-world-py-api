@@ -152,6 +152,7 @@ class Settings(BaseSettings):
     tradier_ab_tol_pct: float = 2.0            # move under this is "stable", not a trend
     tradier_ab_dte_max: int = 6                # today .. today+6 expirations
     tradier_ab_zero_dte_cutoff: str = "13:00"  # CST — no 0DTE entry after this
+    tradier_ab_cooldown_s: int = 3600          # 60m before this strategy re-enters a ticker
 
     # --- safety ---------------------------------------------------------
     # When True (default) bots are always launched in paper/mock mode and

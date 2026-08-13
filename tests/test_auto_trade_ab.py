@@ -145,3 +145,87 @@ def test_ignores_expired_and_unparseable_dates():
 def test_dte_max_zero_still_allows_same_day(dte_max, expected):
     exp, _ = choose_expiration(EXPS, TODAY, dte_max=dte_max, allow_zero_dte=True)
     assert exp == expected
+
+
+# ── per-ticker cooldown ─────────────────────────────────────────────────────
+
+def _watcher(user_id, *, cooldown_s=3600, strategy="ab_signal_options"):
+    return {"user_id": user_id, "events": [],
+            "params": {"ab_cooldown_s": cooldown_s, "strategy": strategy}}
+
+
+def _place_row(db, user_id, ticker, *, minutes_ago, strategy="ab_signal_options",
+               status="open"):
+    from datetime import datetime, timedelta, timezone
+
+    from app.models.tradier import TradierPosition
+
+    row = TradierPosition(
+        user_id=user_id, sandbox=True, underlying=ticker,
+        occ_symbol=f"{ticker}_TEST", option_type="call", strike=1.0,
+        expiration="2026-08-13", contracts=1, tp_pct=15, sl_pct=30, buy_pct=1,
+        buy_order_id="1", strategy=strategy, status=status,
+        opened_at=(datetime.now(timezone.utc).replace(tzinfo=None)
+                   - timedelta(minutes=minutes_ago)),
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_no_cooldown_when_the_ticker_is_untouched(db_session, user):
+    from app.services.auto_trade import _ab_cooldown_left
+    assert _ab_cooldown_left(_watcher(user["user_id"]), "SPY") == 0
+
+
+def test_recent_entry_blocks_the_same_ticker(db_session, user):
+    from app.services.auto_trade import _ab_cooldown_left
+
+    db = db_session
+    _place_row(db, user["user_id"], "SPY", minutes_ago=10)
+    left = _ab_cooldown_left(_watcher(user["user_id"]), "SPY")
+    assert 49 * 60 <= left <= 50 * 60          # ~50 minutes of the hour remain
+
+
+def test_an_hour_later_the_ticker_is_free(db_session, user):
+    from app.services.auto_trade import _ab_cooldown_left
+
+    db = db_session
+    _place_row(db, user["user_id"], "SPY", minutes_ago=61)
+    assert _ab_cooldown_left(_watcher(user["user_id"]), "SPY") == 0
+
+
+def test_cooldown_is_per_ticker(db_session, user):
+    from app.services.auto_trade import _ab_cooldown_left
+
+    db = db_session
+    _place_row(db, user["user_id"], "SPY", minutes_ago=5)
+    w = _watcher(user["user_id"])
+    assert _ab_cooldown_left(w, "SPY") > 0
+    assert _ab_cooldown_left(w, "QQQ") == 0
+
+
+def test_other_strategies_do_not_trigger_it(db_session, user):
+    """The rule is scoped to this strategy — a manual buy must not lock the
+    ticker out of the auto-trader for an hour."""
+    from app.services.auto_trade import _ab_cooldown_left
+
+    db = db_session
+    _place_row(db, user["user_id"], "SPY", minutes_ago=5, strategy="Manual")
+    assert _ab_cooldown_left(_watcher(user["user_id"]), "SPY") == 0
+
+
+def test_a_rejected_buy_does_not_lock_the_ticker(db_session, user):
+    from app.services.auto_trade import _ab_cooldown_left
+
+    db = db_session
+    _place_row(db, user["user_id"], "SPY", minutes_ago=5, status="failed")
+    assert _ab_cooldown_left(_watcher(user["user_id"]), "SPY") == 0
+
+
+def test_zero_disables_the_cooldown(db_session, user):
+    from app.services.auto_trade import _ab_cooldown_left
+
+    db = db_session
+    _place_row(db, user["user_id"], "SPY", minutes_ago=1)
+    assert _ab_cooldown_left(_watcher(user["user_id"], cooldown_s=0), "SPY") == 0

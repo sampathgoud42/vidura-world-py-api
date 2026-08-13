@@ -17,6 +17,12 @@
   at the moment of the order. TP 15% rests on the venue, SL 30% is the
   monitor loop, exactly as with a manual position.
 
+  After an entry the ticker is on ab_cooldown_s (60 min): later signals for
+  it are ignored, however good they look. The cooldown is read from the
+  position ledger rather than watcher memory, so it survives a restart, and
+  it is re-checked at the order — two observations on one ticker can ripen
+  together, and the second must not slip through behind the first.
+
 ``10min_intraday_move`` — the original opening-range level-cross strategy.
 
 Armed by the desk's AUTO TRADE button (which opens a form: strategy,
@@ -273,6 +279,46 @@ def _ab_signals(p: dict) -> list[dict]:
         db.close()
 
 
+def _ab_cooldown_left(w: dict, ticker: str) -> int:
+    """Seconds until this strategy may trade ``ticker`` again, 0 if it may now.
+
+    Read from the position ledger, not watcher memory: the cooldown has to
+    outlive an API restart, and the rows are the only record of what was
+    actually ordered. Rejected buys do not count — an order that never made
+    it onto the book should not lock the ticker out for an hour.
+    """
+    from datetime import timezone as _tz
+
+    from sqlalchemy import select as _select
+
+    from app.core.database import SessionLocal
+    from app.models.tradier import TradierPosition
+
+    p = w["params"]
+    window = p["ab_cooldown_s"]
+    if window <= 0:
+        return 0
+    now = datetime.now(_tz.utc).replace(tzinfo=None)
+    cutoff = now - timedelta(seconds=window)
+    db = SessionLocal()
+    try:
+        last = db.scalar(
+            _select(TradierPosition.opened_at)
+            .where(TradierPosition.user_id == w["user_id"],
+                   TradierPosition.underlying == ticker,
+                   TradierPosition.strategy == p["strategy"],
+                   TradierPosition.status != "failed",
+                   TradierPosition.opened_at >= cutoff)
+            .order_by(TradierPosition.opened_at.desc())
+            .limit(1)
+        )
+    finally:
+        db.close()
+    if last is None:
+        return 0
+    return max(0, int(window - (now - last).total_seconds()))
+
+
 def _ab_open_observation(w: dict, sig: dict) -> None:
     """Pick the contract this signal would trade and start sampling its bid."""
     from app.core.database import SessionLocal
@@ -408,6 +454,13 @@ def _run_ab(w: dict) -> None:
                        for o in w["observing"]):
                     _log_event(w, f"already observing {s['ticker']} {s['side']} — ignored")
                     continue
+                # Cheap gate first: no point sampling a bid for ten minutes
+                # on a ticker this strategy is not allowed to enter yet.
+                left = _ab_cooldown_left(w, s["ticker"])
+                if left:
+                    _log_event(w, f"{s['ticker']} on cooldown — {left // 60}m "
+                                  f"{left % 60}s left, signal ignored")
+                    continue
                 _ab_open_observation(w, s)
 
             # sample every observation's bid, then decide
@@ -443,10 +496,23 @@ def _run_ab(w: dict) -> None:
                                 })
                                 _log_event(w, f"DROPPED {obs['ticker']} — {why}")
                                 continue
-                            # last gate: the cutoff may have passed while we watched
+                            # last gates: both conditions can turn against us
+                            # during the watch — the cutoff passes, or a
+                            # sibling observation on this ticker just filled.
                             if obs["dte"] == 0 and f"{now:%H:%M}" >= p["ab_zero_dte_cutoff"]:
                                 _log_event(w, f"DROPPED {obs['ticker']} 0DTE — past "
                                               f"{p['ab_zero_dte_cutoff']} CST cutoff")
+                                continue
+                            left = _ab_cooldown_left(w, obs["ticker"])
+                            if left:
+                                w["attempts"].append({
+                                    "at": f"{now:%m-%d %H:%M:%S}", "ticker": obs["ticker"],
+                                    "signal": f"{obs['book']}-{obs['direction']}",
+                                    "side": obs["side"], "status": "skipped",
+                                    "error": f"cooldown, {left // 60}m left",
+                                })
+                                _log_event(w, f"DROPPED {obs['ticker']} — cooldown, "
+                                              f"{left // 60}m {left % 60}s left")
                                 continue
                             _ab_place(w, obs, why)
                     finally:
@@ -524,7 +590,8 @@ def start(user_id: str, *, buy_pct: float | None = None,
           min_contracts: int | None = None, live: bool = False,
           books: str | list[str] | None = None,
           dte_max: int | None = None,
-          zero_dte_cutoff: str | None = None) -> dict:
+          zero_dte_cutoff: str | None = None,
+          cooldown_min: int | None = None) -> dict:
     s = get_settings()
     params = {
         "strategy": (strategy or s.tradier_auto_strategy).strip(),
@@ -552,6 +619,8 @@ def start(user_id: str, *, buy_pct: float | None = None,
         "ab_dte_max": (s.tradier_ab_dte_max if dte_max is None else int(dte_max)),
         "ab_zero_dte_cutoff": (zero_dte_cutoff
                                or s.tradier_ab_zero_dte_cutoff).strip(),
+        "ab_cooldown_s": (s.tradier_ab_cooldown_s if cooldown_min is None
+                          else int(cooldown_min) * 60),
     }
     raw_books = books if books is not None else s.tradier_ab_books
     if isinstance(raw_books, str):
@@ -587,6 +656,8 @@ def start(user_id: str, *, buy_pct: float | None = None,
             raise AutoTradeError("zero_dte_cutoff must be HH:MM (24h CST)")
         if not (0 <= params["ab_dte_max"] <= 30):
             raise AutoTradeError("dte_max must be between 0 and 30")
+        if not (0 <= params["ab_cooldown_s"] <= 24 * 3600):
+            raise AutoTradeError("cooldown_min must be between 0 and 1440")
 
     with _LOCK:
         existing = _WATCHERS.get(user_id)
@@ -602,6 +673,14 @@ def start(user_id: str, *, buy_pct: float | None = None,
             "attempts": [], "events": [],
             "started_at": f"{_now_cst():%m-%d %H:%M:%S}",
         }
+        # Warm every module the watcher thread imports lazily, on THIS thread,
+        # before it starts. Two threads importing app.models at the same
+        # moment raise _DeadlockError from Python's import lock — which kills
+        # the watcher outright, silently, before its first poll.
+        from app.models import User            # noqa: F401
+        from app.models.tradier import TradierPosition  # noqa: F401
+        from app.services import levels, super_research, tradier_bot  # noqa: F401
+
         loop = _run_ab if params["strategy"] == "ab_signal_options" else _run
         w["thread"] = threading.Thread(target=loop, args=(w,), daemon=True,
                                        name=f"autotrade-{user_id[:8]}")
@@ -636,6 +715,7 @@ def defaults() -> dict:
         "books": s.tradier_ab_books,
         "dte_max": s.tradier_ab_dte_max,
         "zero_dte_cutoff": s.tradier_ab_zero_dte_cutoff,
+        "cooldown_min": s.tradier_ab_cooldown_s // 60,
         "observe_min_s": s.tradier_ab_observe_min_s,
         "observe_max_s": s.tradier_ab_observe_max_s,
         "stable_s": s.tradier_ab_stable_s,
