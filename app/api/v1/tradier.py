@@ -285,10 +285,12 @@ def list_positions(
                         pattern="^(all|active|pending|open|tp_filled|sl_sold|closed|failed)$"),
     venue: str = Query(default="all", pattern="^(all|live|sandbox)$",
                        description="filter by the venue the position was opened on"),
+    marks: bool = Query(default=False,
+                        description="attach live bid + unrealized P&L for active rows"),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> dict:
-    _user_or_404(db, user_id)
+    user = _user_or_404(db, user_id)
     stmt = select(TradierPosition).where(TradierPosition.user_id == user_id)
     if status == "active":
         stmt = stmt.where(TradierPosition.status.in_(tradier_bot.ACTIVE_STATUSES))
@@ -301,7 +303,20 @@ def list_positions(
     rows = list(db.scalars(
         stmt.order_by(TradierPosition.opened_at.desc()).limit(limit)
     ).all())
-    return {"total": len(rows), "items": [_pos_out(p) for p in rows]}
+    quotes: dict[str, dict] = {}
+    if marks and rows:
+        quotes = tradier_bot.live_quotes(user, rows)
+
+    def mark_for(p: TradierPosition) -> dict | None:
+        # Keyed by contract, and two rows can hold the SAME contract — so a
+        # settled row must not borrow the open row's quote and report a live
+        # P&L next to its realized one.
+        if p.status not in tradier_bot.ACTIVE_STATUSES:
+            return None
+        return quotes.get(p.occ_symbol)
+
+    return {"total": len(rows),
+            "items": [_pos_out(p, mark_for(p)) for p in rows]}
 
 
 @router.post("/positions/sweep", operation_id="sweepTradierPositions")
@@ -397,9 +412,20 @@ def autotrade_status(user_id: str = Query(...)) -> dict:
     return auto_trade.status(user_id)
 
 
-def _pos_out(p: TradierPosition) -> dict:
+def _pos_out(p: TradierPosition, quote: dict | None = None) -> dict:
+    # Unrealized mark and P&L for a position that is still running. Priced on
+    # the BID: that is what closing it right now would actually pay.
+    live_bid = live_pnl = None
+    if quote is not None:
+        try:
+            live_bid = float(quote.get("bid")) if quote.get("bid") is not None else None
+        except (TypeError, ValueError):
+            live_bid = None
+        if live_bid is not None and p.entry_price and p.contracts:
+            live_pnl = round((live_bid - p.entry_price) * 100 * p.contracts, 2)
     return {
         "id": p.id, "status": p.status, "sandbox": p.sandbox,
+        "live_bid": live_bid, "live_pnl_usd": live_pnl,
         "strategy": p.strategy or "Manual",
         "underlying": p.underlying, "occ_symbol": p.occ_symbol,
         "option_type": p.option_type, "strike": p.strike,

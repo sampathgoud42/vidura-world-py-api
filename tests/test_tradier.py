@@ -323,3 +323,36 @@ def test_positions_filter_by_venue(client, fake, db_user, user):
     assert all(p["sandbox"] is True for p in sandbox["items"])
     assert all(p["sandbox"] is False for p in live["items"])
     assert live["total"] >= 1 and sandbox["total"] >= 1
+
+
+def test_live_marks_only_attach_to_active_rows(client, fake, db_user, user):
+    """Two rows can hold the SAME contract. A settled row must not borrow the
+    open row's quote and show a live P&L beside its realized one."""
+    db, u = db_user
+    closed = tradier_bot.open_position(db, u, symbol="SPY", side="call")
+    fake.status[closed.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, u)
+    db.refresh(closed)
+    fake.status[closed.tp_order_id] = {"status": "filled", "avg_fill_price": 0.58}
+    tradier_bot.monitor_pass(db, u)
+    db.refresh(closed)
+    assert closed.status == "tp_filled"
+
+    still_open = tradier_bot.open_position(db, u, symbol="SPY", side="call")
+    assert still_open.occ_symbol == closed.occ_symbol      # same contract
+
+    import app.services.tradier_bot as tb
+    orig = tb.live_quotes
+    tb.live_quotes = lambda user, rows: {closed.occ_symbol: {"bid": 0.90, "ask": 0.92}}
+    try:
+        page = client.get(
+            f"/api/v1/tradier/positions?user_id={user['user_id']}"
+            f"&status=all&marks=true").json()
+    finally:
+        tb.live_quotes = orig
+
+    rows = {p["id"]: p for p in page["items"]}
+    assert rows[closed.id]["live_bid"] is None
+    assert rows[closed.id]["live_pnl_usd"] is None
+    assert rows[closed.id]["pnl_usd"] == pytest.approx(40.0)   # realized, untouched
+    assert rows[still_open.id]["live_bid"] == pytest.approx(0.90)

@@ -368,6 +368,36 @@ def _monitor_one(client: TradierClient, pos: TradierPosition,
         events.append(f"#{pos.id} SL hit @ {bid:.2f}")
 
 
+def live_quotes(user: User, rows) -> dict[str, dict]:
+    """``{occ_symbol: {bid, ask, last}}`` for the still-active rows.
+
+    One batch request per venue, and none at all when nothing is active —
+    the desk polls this every few seconds and Tradier rate-limits per token.
+    Quote trouble is swallowed: a stale mark must never break the table.
+    """
+    by_venue: dict[bool, set[str]] = {}
+    for p in rows:
+        if p.status in ACTIVE_STATUSES and p.occ_symbol:
+            by_venue.setdefault(not p.sandbox, set()).add(p.occ_symbol)
+    out: dict[str, dict] = {}
+    for want_live, syms in by_venue.items():
+        try:
+            client = client_for(user, live=want_live)
+        except Exception:                         # noqa: BLE001 - venue not usable
+            continue
+        try:
+            for q in client.quotes(sorted(syms)):
+                sym = q.get("symbol")
+                if sym:
+                    out[sym] = {"bid": q.get("bid"), "ask": q.get("ask"),
+                                "last": q.get("last")}
+        except TradierError:
+            pass
+        finally:
+            client.close()
+    return out
+
+
 def close_position(db: Session, user: User, position_id: int) -> TradierPosition:
     """Manual close from the desk: cancel whatever rests, sell at market."""
     pos = db.get(TradierPosition, position_id)
