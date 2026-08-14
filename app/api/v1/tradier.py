@@ -360,6 +360,10 @@ def chain_preview(
     expiries: int = Query(default=1, ge=1, le=6,
                           description="how many expirations to try before "
                                       "giving up on the delta band"),
+    zero_dte: bool = Query(default=False,
+                           description="include today's expiration; off by "
+                                       "default, so same-day contracts are "
+                                       "only ever traded deliberately"),
     live: bool = Query(default=False,
                        description="true prices from the PRODUCTION venue"),
     db: Session = Depends(get_db),
@@ -379,9 +383,20 @@ def chain_preview(
         if expiration:
             candidates = [expiration]
         else:
-            candidates = (client.expirations(sym) or [])[:expiries]
+            exps = client.expirations(sym) or []
+            if not zero_dte:
+                # Same-day contracts are excluded unless asked for: their
+                # deltas are barely a position size, and an entry that has
+                # hours to live is a different trade from the one the delta
+                # band describes.
+                today = f"{datetime.now(CST):%Y-%m-%d}"
+                exps = [e for e in exps if str(e) > today]
+            candidates = exps[:expiries]
         if not candidates:
-            raise HTTPException(status_code=404, detail=f"no expirations for {symbol}")
+            raise HTTPException(
+                status_code=404,
+                detail=(f"no {'' if zero_dte else 'non-0DTE '}expirations "
+                        f"for {symbol}"))
 
         # Walk out until the band has something. The nearest expiry is often
         # 0DTE, whose deltas sit near 0 or 1 — a mid-band request against it
@@ -432,6 +447,9 @@ class OpenRequest(BaseModel):
                           description="cancel the TP and sell when the bid is this % below entry")
     expiration: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$",
                                    description="YYYY-MM-DD; omit for the nearest listed")
+    zero_dte: bool = Field(default=False,
+                           description="allow today's expiration; off by "
+                                       "default, so 0DTE is deliberate")
     live: bool = Field(default=False,
                        description="false (default) places a MOCK order on the "
                                    "Tradier sandbox; true spends real money on "
@@ -454,6 +472,7 @@ def open_position(payload: OpenRequest, db: Session = Depends(get_db)) -> dict:
             delta_min=payload.delta_min, delta_max=payload.delta_max,
             tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
             expiration=payload.expiration, live=payload.live,
+            zero_dte=payload.zero_dte,
         )
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc

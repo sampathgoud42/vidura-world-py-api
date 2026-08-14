@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,6 +44,9 @@ DEFAULT_TP_PCT = _S.tradier_tp_pct
 DEFAULT_SL_PCT = _S.tradier_sl_pct
 
 ACTIVE_STATUSES = ("pending", "open")
+
+# the desk's trading day, for deciding what counts as "today's expiration"
+CST = ZoneInfo("America/Chicago")
 
 
 class TradierBotError(RuntimeError):
@@ -141,11 +145,16 @@ def open_position(
     min_contracts: int = 1,
     strategy: str = "Manual",
     live: bool = False,
+    zero_dte: bool = False,
 ) -> TradierPosition:
     """Select, size and buy; the monitor takes over from there.
 
     ``live=False`` (the default) places the order on the SANDBOX venue with
     the sandbox token — a mock order against fake money.
+
+    ``zero_dte=False`` (the default) skips today's expiration. A same-day
+    contract with hours left is a different trade from the one a delta band
+    describes, so it has to be asked for.
     """
     symbol = symbol.strip().upper()
     side = side.strip().lower()
@@ -167,10 +176,15 @@ def open_position(
             )
 
         if expiration is None:
-            exps = client.expirations(symbol)
+            exps = client.expirations(symbol) or []
+            if not zero_dte:
+                today = f"{datetime.now(CST):%Y-%m-%d}"
+                exps = [e for e in exps if str(e) > today]
             if not exps:
-                raise TradierBotError(f"no option expirations for {symbol}", 404)
-            expiration = exps[0]        # nearest listed expiration
+                raise TradierBotError(
+                    f"no {'' if zero_dte else 'non-0DTE '}option expirations "
+                    f"for {symbol}", 404)
+            expiration = exps[0]        # nearest qualifying expiration
 
         chain = client.chain(symbol, expiration)
         opt = pick_contract(chain, side, delta_min, delta_max)

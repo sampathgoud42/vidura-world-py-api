@@ -52,7 +52,13 @@ class FakeTradier:
                 "account_id": "TEST", "sandbox": True}
 
     def expirations(self, symbol):
-        return ["2026-08-07", "2026-08-14"]
+        # Relative to today, or the non-0DTE filter empties the list the
+        # moment the calendar passes a hard-coded date.
+        from datetime import date, timedelta
+        today = date.today()
+        return [f"{today:%Y-%m-%d}",
+                f"{today + timedelta(days=3):%Y-%m-%d}",
+                f"{today + timedelta(days=10):%Y-%m-%d}"]
 
     def chain(self, symbol, expiration):
         return _chain()
@@ -513,3 +519,41 @@ def test_sizing_below_min_contracts_skips_the_buy(fake, db_user):
         tradier_bot.open_contract(db, user, occ_symbol="TSLA260814C00350000",
                                   buy_pct=50)
     assert "min_contracts" in str(exc.value)
+
+
+# ── 0DTE is opt-in ──────────────────────────────────────────────────────────
+
+def _today():
+    from datetime import date
+    return f"{date.today():%Y-%m-%d}"
+
+
+def test_same_day_expiry_is_skipped_by_default(fake, db_user):
+    """The default has to be the safe one: a contract with hours to live is
+    not the trade a delta band describes."""
+    db, user = db_user
+    pos = tradier_bot.open_position(db, user, symbol="SPY", side="call")
+    assert pos.expiration != _today()
+
+
+def test_same_day_expiry_is_used_when_asked_for(fake, db_user):
+    db, user = db_user
+    pos = tradier_bot.open_position(db, user, symbol="SPY", side="call",
+                                    zero_dte=True)
+    assert pos.expiration == _today()
+
+
+def test_an_explicit_expiration_still_wins(fake, db_user):
+    """Callers that name a date — the auto-traders do — keep their own rule."""
+    db, user = db_user
+    pos = tradier_bot.open_position(db, user, symbol="SPY", side="call",
+                                    expiration=_today())
+    assert pos.expiration == _today()
+
+
+def test_no_non_zero_dte_expiry_is_a_clear_refusal(fake, db_user, monkeypatch):
+    db, user = db_user
+    monkeypatch.setattr(fake, "expirations", lambda symbol: [_today()])
+    with pytest.raises(tradier_bot.TradierBotError) as exc:
+        tradier_bot.open_position(db, user, symbol="SPY", side="call")
+    assert "non-0DTE" in str(exc.value)
