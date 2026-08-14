@@ -131,6 +131,11 @@ def _scan_symbol(client, symbol: str, day: str, keep_exps: int,
                     "volume": vol,
                     "open_interest": oi,
                     "last": o.get("last"),
+                    # the day's range on the CONTRACT, not the underlying:
+                    # where the premium has actually traded tells you whether
+                    # you would be buying this flow near its low or its high
+                    "low": o.get("low"),
+                    "high": o.get("high"),
                     "bid": o.get("bid"),
                     "ask": o.get("ask"),
                     "change_pct": o.get("change_percentage"),
