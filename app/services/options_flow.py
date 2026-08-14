@@ -111,8 +111,20 @@ def _expirations(client, symbol: str, day: str, keep: int) -> list[str]:
     return exps[:keep]
 
 
+def _price_of(o: dict) -> float | None:
+    """What the contract is worth: the last print, else the offer, else the bid."""
+    for key in ("last", "ask", "bid"):
+        try:
+            v = float(o.get(key))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return None
+
+
 def _scan_symbol(client, symbol: str, day: str, keep_exps: int,
-                 min_volume: int) -> list[dict]:
+                 min_volume: int, min_price: float = 0.0) -> list[dict]:
     """Contracts on this symbol worth ranking, from its nearest expirations."""
     out: list[dict] = []
     try:
@@ -120,6 +132,11 @@ def _scan_symbol(client, symbol: str, day: str, keep_exps: int,
             for o in client.chain(symbol, expiration) or []:
                 vol = int(o.get("volume") or 0)
                 if vol < min_volume:
+                    continue
+                # Priced out before ranking, not after: a penny contract that
+                # traded 200k would otherwise take a slot from real flow.
+                px = _price_of(o)
+                if min_price > 0 and (px is None or px < min_price):
                     continue
                 oi = int(o.get("open_interest") or 0)
                 out.append({
@@ -159,7 +176,8 @@ def _refresh(user, live: bool) -> dict:
             for got in pool.map(
                 lambda sym: _scan_symbol(client, sym, day,
                                          s.tradier_flow_expirations,
-                                         s.tradier_flow_min_volume),
+                                         s.tradier_flow_min_volume,
+                                         s.tradier_flow_min_price),
                 syms,
             ):
                 rows.extend(got)
@@ -186,6 +204,7 @@ def _refresh(user, live: bool) -> dict:
             "day": day,
             "symbols": len(syms),
             "contracts_seen": len(rows),
+            "min_price": s.tradier_flow_min_price,
             "oi_baseline_date": base_day,
             "took_s": round(time.time() - started, 1),
             "venue": "live" if live else "sandbox",

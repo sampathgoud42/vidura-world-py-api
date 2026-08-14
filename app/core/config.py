@@ -168,6 +168,10 @@ class Settings(BaseSettings):
     tradier_flow_expirations: int = 2          # nearest N expirations per symbol
     tradier_flow_top: int = 10                 # contracts shown
     tradier_flow_min_volume: int = 100         # ignore untraded contracts
+    # Cheap contracts dominate a volume ranking — a 4-cent option trades in
+    # enormous size and cannot be managed with a percentage TP. Priced below
+    # this, a contract is a lottery ticket, not flow worth acting on.
+    tradier_flow_min_price: float = 0.30
     tradier_flow_ttl_s: int = 300              # snapshot age before a refresh
     tradier_flow_workers: int = 6              # parallel chain fetches
 
