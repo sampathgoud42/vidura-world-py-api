@@ -189,6 +189,14 @@ class TradierClient:
                       params={"symbols": ",".join(symbols)})
         return _as_list((d.get("quotes") or {}).get("quote"))
 
+    def timesales(self, symbol: str, interval: str = "1min") -> list[dict]:
+        """Intraday bars for today: ``[{time, timestamp, open, high, low, close,
+        volume, vwap}]``. The seed a live chart needs — the socket only starts
+        producing from the moment you connect."""
+        d = self._req("GET", "/markets/timesales",
+                      params={"symbol": symbol, "interval": interval})
+        return _as_list((d.get("series") or {}).get("data"))
+
     # ── streaming ───────────────────────────────────────────────────────────
     def market_session(self) -> dict:
         """A market streaming session: ``{sessionid, url}``.

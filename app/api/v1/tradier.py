@@ -174,6 +174,70 @@ def stream_session(user_id: str = Query(...), db: Session = Depends(get_db)) -> 
         client.close()
 
 
+# symbol|interval|venue -> (monotonic, payload). Two charts polling at once
+# must not become two upstream calls per tick.
+_BARS_CACHE: dict[str, tuple[float, dict]] = {}
+_BARS_TTL = 25.0
+
+
+@router.get("/timesales", operation_id="getTradierTimesales")
+def timesales(
+    user_id: str = Query(...),
+    symbol: str = Query(..., max_length=12),
+    interval: str = Query(default="1min", pattern="^(1min|5min|15min)$"),
+    live: bool = Query(default=False,
+                       description="true reads bars from the PRODUCTION venue"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Today's intraday bars, plus the prior close the day is measured against.
+
+    Seeds the desk's charts: a WebSocket only produces from the moment it
+    connects, so without this the chart would start blank every reload.
+    """
+    import time as _t
+
+    sym = symbol.strip().upper()
+    key = f"{sym}|{interval}|{'live' if live else 'sbx'}"
+    hit = _BARS_CACHE.get(key)
+    if hit and _t.monotonic() - hit[0] < _BARS_TTL:
+        return hit[1]
+
+    user = _user_or_404(db, user_id)
+    try:
+        client = tradier_bot.client_for(user, live=live)
+    except Exception as exc:                          # noqa: BLE001
+        raise _translated(exc) from exc
+    try:
+        raw = client.timesales(sym, interval=interval)
+        bars = []
+        for b in raw:
+            try:
+                bars.append({
+                    "t": int(b.get("timestamp") or 0),
+                    "time": b.get("time"),
+                    "c": float(b.get("close") or b.get("price") or 0),
+                    "h": float(b.get("high") or 0),
+                    "l": float(b.get("low") or 0),
+                    "v": float(b.get("volume") or 0),
+                })
+            except (TypeError, ValueError):
+                continue
+        prev_close = None
+        try:
+            q = (client.quotes([sym]) or [{}])[0]
+            prev_close = float(q.get("prevclose")) if q.get("prevclose") else None
+        except (TradierError, TypeError, ValueError, IndexError):
+            prev_close = None
+        out = {"symbol": sym, "interval": interval, "bars": bars,
+               "prev_close": prev_close, "venue": "live" if live else "sandbox"}
+        _BARS_CACHE[key] = (_t.monotonic(), out)
+        return out
+    except TradierError as exc:
+        raise _translated(exc) from exc
+    finally:
+        client.close()
+
+
 @router.get("/flow", operation_id="getTradierOptionsFlow")
 def options_flow(
     user_id: str = Query(...),
