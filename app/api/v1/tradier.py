@@ -215,9 +215,10 @@ def timesales(
                 bars.append({
                     "t": int(b.get("timestamp") or 0),
                     "time": b.get("time"),
-                    "c": float(b.get("close") or b.get("price") or 0),
+                    "o": float(b.get("open") or 0),
                     "h": float(b.get("high") or 0),
                     "l": float(b.get("low") or 0),
+                    "c": float(b.get("close") or b.get("price") or 0),
                     "v": float(b.get("volume") or 0),
                 })
             except (TypeError, ValueError):
