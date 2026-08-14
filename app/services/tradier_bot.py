@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
@@ -47,6 +48,18 @@ ACTIVE_STATUSES = ("pending", "open")
 
 # the desk's trading day, for deciding what counts as "today's expiration"
 CST = ZoneInfo("America/Chicago")
+
+# One monitor pass per user at a time. The background loop and the desk's
+# sweep button both run it, and two passes over the same freshly-filled row
+# race to arm it — the venue guard catches the duplicate order, but the
+# cheaper fix is not to have two passes in flight at all.
+_monitor_locks: dict[str, threading.Lock] = {}
+_monitor_guard = threading.Lock()
+
+
+def _monitor_lock(user_id: str) -> threading.Lock:
+    with _monitor_guard:
+        return _monitor_locks.setdefault(user_id, threading.Lock())
 
 
 class TradierBotError(RuntimeError):
@@ -393,8 +406,12 @@ def _place_tp(client: TradierClient, pos: TradierPosition) -> None:
     spoken_for = sum(abs(float(o.get("quantity") or 0)) for o in resting)
     held = _held_quantity(client, pos.occ_symbol)
     if spoken_for + pos.contracts > held:
-        pos.note = (f"filled @ {entry:.2f}; exits not armed — {spoken_for:g} of "
-                    f"{held:g} held already have a resting sell")
+        # Do not talk over a row that already HAS its exit. A pass that lost
+        # the race to another one still lands here, and rewriting the note
+        # would report "not armed" on a position that is armed.
+        if not pos.tp_order_id:
+            pos.note = (f"filled @ {entry:.2f}; exits not armed — {spoken_for:g} "
+                        f"of {held:g} held already have a resting sell")
         logger.warning("tradier: #%s refused a TP — %s resting vs %s held on %s",
                        pos.id, spoken_for, held, pos.occ_symbol)
         return
@@ -427,10 +444,25 @@ def _finalize(pos: TradierPosition, status: str, exit_price: float | None,
 
 
 def monitor_pass(db: Session, user: User) -> dict:
-    """One sweep over this user's active positions. Called by the API's
-    background loop and by the desk's refresh — safe to run concurrently
-    with itself only in the sense that every action re-checks venue state
-    first (fills are detected from order status, not assumed)."""
+    """One sweep over this user's active positions.
+
+    Called by the API's background loop AND by the desk's refresh, so passes
+    are serialized per user: two of them over the same freshly-filled row
+    both try to arm it, and while the venue guard refuses the duplicate
+    order, the loser still writes its own conclusions over the winner's.
+    A pass that finds one already running simply steps aside — the next tick
+    is seconds away.
+    """
+    lock = _monitor_lock(user.user_id)
+    if not lock.acquire(blocking=False):
+        return {"checked": 0, "events": [], "busy": True}
+    try:
+        return _monitor_pass_locked(db, user)
+    finally:
+        lock.release()
+
+
+def _monitor_pass_locked(db: Session, user: User) -> dict:
     rows = list(db.scalars(
         select(TradierPosition).where(
             TradierPosition.user_id == user.user_id,
