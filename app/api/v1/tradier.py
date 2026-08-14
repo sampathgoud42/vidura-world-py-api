@@ -424,6 +424,37 @@ def open_position(payload: OpenRequest, db: Session = Depends(get_db)) -> dict:
     return _pos_out(pos)
 
 
+class ContractRequest(BaseModel):
+    """Buy one named contract — the flow board already chose it."""
+
+    user_id: str
+    occ_symbol: str = Field(..., max_length=32, examples=["TSLA260814C00350000"])
+    buy_pct: float = Field(default=tradier_bot.DEFAULT_BUY_PCT, gt=0, le=100)
+    tp_pct: float = Field(default=tradier_bot.DEFAULT_TP_PCT, gt=0, le=500)
+    sl_pct: float = Field(default=tradier_bot.DEFAULT_SL_PCT, gt=0, lt=100)
+    live: bool = Field(default=False,
+                       description="false (default) buys on the Tradier sandbox")
+
+
+@router.post("/positions/contract", operation_id="openTradierContract")
+def open_contract(payload: ContractRequest, db: Session = Depends(get_db)) -> dict:
+    """Buy a specific option contract as a managed position.
+
+    Same sizing, TP and SL as a hand-placed trade — the only difference is
+    that the contract came from the flow board instead of the delta search.
+    """
+    require_local_runtime("Placing a Tradier order")
+    user = _user_or_404(db, payload.user_id)
+    try:
+        pos = tradier_bot.open_contract(
+            db, user, occ_symbol=payload.occ_symbol, buy_pct=payload.buy_pct,
+            tp_pct=payload.tp_pct, sl_pct=payload.sl_pct, live=payload.live,
+        )
+    except Exception as exc:                          # noqa: BLE001
+        raise _translated(exc) from exc
+    return _pos_out(pos)
+
+
 class TargetRequest(BaseModel):
     user_id: str
     target_price: float = Field(..., gt=0, le=10_000,

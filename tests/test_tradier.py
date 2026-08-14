@@ -449,3 +449,67 @@ def test_target_cannot_be_moved_on_a_finished_position(fake, db_user):
     with pytest.raises(tradier_bot.TradierBotError) as exc:
         tradier_bot.set_target(db, user, pos.id, 0.99)
     assert exc.value.status_code == 409
+
+
+# ── buying a named contract (the options-flow board) ────────────────────────
+
+def _quoting_fake(fake, *, ask=0.50, bid=0.48):
+    """Teach the scripted venue to quote one OCC symbol like Tradier does."""
+    fake.quote = lambda occ: {
+        "symbol": occ, "underlying": "TSLA", "root_symbol": "TSLA",
+        "strike": 350.0, "option_type": "call",
+        "expiration_date": "2026-08-14",
+        "bid": bid, "ask": ask, "last": 0.49, "low": 0.30, "high": 0.90,
+    }
+    return fake
+
+
+def test_buys_the_named_contract_not_a_delta_pick(fake, db_user):
+    """The flow board already chose it — the delta search must not override."""
+    db, user = db_user
+    _quoting_fake(fake)
+    pos = tradier_bot.open_contract(db, user, occ_symbol="TSLA260814C00350000",
+                                    buy_pct=50, tp_pct=15, sl_pct=30)
+    assert pos.occ_symbol == "TSLA260814C00350000"   # not SPY_C635
+    assert pos.underlying == "TSLA"
+    assert pos.option_type == "call"
+    assert pos.strike == pytest.approx(350.0)
+    assert pos.strategy == "Manual"
+    assert pos.status == "pending"
+    # 50% of the 500-dollar account at the 0.50 ask
+    assert pos.contracts == 5
+    order = fake.orders[pos.buy_order_id]
+    assert order["side"] == "buy_to_open"
+    assert order["occ"] == "TSLA260814C00350000"
+    assert order["price"] == pytest.approx(0.50)
+
+
+def test_the_named_contract_is_managed_like_any_other(fake, db_user):
+    db, user = db_user
+    _quoting_fake(fake)
+    pos = tradier_bot.open_contract(db, user, occ_symbol="TSLA260814C00350000",
+                                    buy_pct=50, tp_pct=15, sl_pct=30)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "open"
+    assert pos.tp_price == pytest.approx(0.58)       # +15%, ceiled to the penny
+    assert pos.sl_price == pytest.approx(0.35)       # -30%
+    assert fake.orders[pos.tp_order_id]["side"] == "sell_to_close"
+
+
+def test_a_contract_with_no_offer_is_refused(fake, db_user):
+    db, user = db_user
+    _quoting_fake(fake, ask=0)
+    with pytest.raises(tradier_bot.TradierBotError) as exc:
+        tradier_bot.open_contract(db, user, occ_symbol="TSLA260814C00350000")
+    assert exc.value.status_code == 409
+
+
+def test_sizing_below_min_contracts_skips_the_buy(fake, db_user):
+    db, user = db_user
+    _quoting_fake(fake, ask=9.99)                    # 50% of 500 buys none
+    with pytest.raises(tradier_bot.TradierBotError) as exc:
+        tradier_bot.open_contract(db, user, occ_symbol="TSLA260814C00350000",
+                                  buy_pct=50)
+    assert "min_contracts" in str(exc.value)

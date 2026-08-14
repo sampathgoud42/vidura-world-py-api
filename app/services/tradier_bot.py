@@ -229,6 +229,95 @@ def open_position(
     return pos
 
 
+def open_contract(
+    db: Session,
+    user: User,
+    *,
+    occ_symbol: str,
+    buy_pct: float = DEFAULT_BUY_PCT,
+    tp_pct: float = DEFAULT_TP_PCT,
+    sl_pct: float = DEFAULT_SL_PCT,
+    min_contracts: int = 1,
+    strategy: str = "Manual",
+    live: bool = False,
+) -> TradierPosition:
+    """Buy ONE named contract, sized and managed like any desk position.
+
+    The delta search in ``open_position`` exists to CHOOSE a contract; here
+    the operator already has one (a row on the flow board), so the only
+    questions left are what it costs and how many fit inside buy_pct. It
+    becomes an ordinary managed position: same TP resting on the venue, same
+    monitored stop, same 'Manual' strategy tag.
+    """
+    occ = (occ_symbol or "").strip().upper()
+    if not occ:
+        raise TradierBotError("an option symbol is required")
+    if not (0 < buy_pct <= 100):
+        raise TradierBotError("buy_pct must be in (0, 100]")
+
+    client = client_for(user, live=live)
+    venue_sandbox = client.creds.sandbox
+    try:
+        bal = client.balances()
+        buying_power = bal["option_buying_power"]
+        if buying_power <= 0:
+            raise TradierBotError(
+                f"option buying power is ${buying_power:.2f} — nothing to size against", 409
+            )
+        q = client.quote(occ)
+        underlying = (q.get("underlying") or q.get("root_symbol") or "").upper()
+        ask = float(q.get("ask") or 0)
+        if not underlying or ask <= 0:
+            raise TradierBotError(
+                f"{occ} has no tradeable offer right now (ask {ask})", 409)
+
+        limit_price = ask                    # what a buy actually costs
+        contracts = size_contracts(buying_power, buy_pct, limit_price)
+        if contracts < max(1, min_contracts):
+            raise TradierBotError(
+                f"sized {contracts} contract(s) — below min_contracts "
+                f"{max(1, min_contracts)}: {buy_pct:g}% of ${buying_power:.2f} "
+                f"at ${limit_price:.2f} (${limit_price * 100:.2f}/contract) "
+                f"for {occ}", 409
+            )
+        order = client.place_option_order(
+            underlying=underlying, occ_symbol=occ, side="buy_to_open",
+            quantity=contracts, order_type="limit", price=limit_price,
+        )
+    finally:
+        client.close()
+
+    pos = TradierPosition(
+        user_id=user.user_id,
+        sandbox=venue_sandbox,
+        underlying=underlying,
+        occ_symbol=occ,
+        option_type=(q.get("option_type") or "").lower(),
+        strike=float(q.get("strike") or 0),
+        expiration=str(q.get("expiration_date") or ""),
+        # a bare option quote carries no greeks; the delta band did not pick
+        # this contract, so there is none to record
+        delta_at_entry=None,
+        contracts=contracts,
+        tp_pct=tp_pct,
+        sl_pct=sl_pct,
+        buy_pct=buy_pct,
+        buy_order_id=str(order["id"]),
+        strategy=(strategy or "Manual")[:64],
+        status="pending",
+        note=f"buy_to_open {contracts} @ {limit_price:.2f} limit",
+        raw={"buy_order": order, "picked": {
+            "bid": q.get("bid"), "ask": q.get("ask"), "source": "options flow",
+        }},
+    )
+    db.add(pos)
+    db.commit()
+    db.refresh(pos)
+    logger.info("tradier: opened #%s %s x%s from the flow board",
+                pos.id, pos.occ_symbol, contracts)
+    return pos
+
+
 # ── monitor ─────────────────────────────────────────────────────────────────
 
 def exit_prices(entry: float, tp_pct: float, sl_pct: float) -> tuple[float, float]:
