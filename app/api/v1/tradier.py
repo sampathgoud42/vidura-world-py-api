@@ -12,6 +12,9 @@ cannot reach live money by construction.
 
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -26,6 +29,8 @@ from app.services import tradier_bot
 from app.services.tradier_client import TradierError
 
 router = APIRouter(prefix="/tradier", tags=["tradier"])
+
+CST = ZoneInfo("America/Chicago")
 
 
 def _user_or_404(db: Session, user_id: str) -> User:
@@ -185,19 +190,28 @@ def timesales(
     user_id: str = Query(...),
     symbol: str = Query(..., max_length=12),
     interval: str = Query(default="1min", pattern="^(1min|5min|15min)$"),
+    days: int = Query(default=1, ge=1, le=30,
+                      description="sessions of history; >1 is warmup for "
+                                  "indicators, not extra chart"),
     live: bool = Query(default=False,
                        description="true reads bars from the PRODUCTION venue"),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Today's intraday bars, plus the prior close the day is measured against.
+    """Intraday bars and the prior close the day is measured against.
 
     Seeds the desk's charts: a WebSocket only produces from the moment it
     connects, so without this the chart would start blank every reload.
+
+    ``days`` exists for indicators rather than for the picture. ADX(14) needs
+    roughly 28 bars before it means anything, and a 15-minute session only
+    yields ~26 — so the caller asks for earlier sessions to warm the maths up
+    and still draws only the latest day.
     """
     import time as _t
+    from datetime import timedelta as _td
 
     sym = symbol.strip().upper()
-    key = f"{sym}|{interval}|{'live' if live else 'sbx'}"
+    key = f"{sym}|{interval}|{days}|{'live' if live else 'sbx'}"
     hit = _BARS_CACHE.get(key)
     if hit and _t.monotonic() - hit[0] < _BARS_TTL:
         return hit[1]
@@ -208,7 +222,12 @@ def timesales(
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc
     try:
-        raw = client.timesales(sym, interval=interval)
+        # calendar days back, generous enough to cover weekends and holidays
+        start = None
+        if days > 1:
+            back = datetime.now(CST).date() - _td(days=days * 2 + 3)
+            start = f"{back:%Y-%m-%d} 00:00"
+        raw = client.timesales(sym, interval=interval, start=start)
         bars = []
         for b in raw:
             try:
