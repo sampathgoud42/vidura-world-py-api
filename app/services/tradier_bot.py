@@ -246,11 +246,28 @@ def exit_prices(entry: float, tp_pct: float, sl_pct: float) -> tuple[float, floa
             _ceil_penny(entry * (1 - sl_pct / 100.0)))
 
 
+def _target_override(pos: TradierPosition) -> float | None:
+    """An explicit target the operator set, which outranks the percentage."""
+    raw = pos.raw if isinstance(pos.raw, dict) else {}
+    try:
+        px = float((raw.get("tp_override") or {}).get("price"))
+        return px if px > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _place_tp(client: TradierClient, pos: TradierPosition) -> None:
     """Entry filled -> arm the exits. TP rests on the venue (survives us);
     the SL threshold is stored and watched by the sweep."""
     entry = pos.entry_price or 0
     pos.tp_price, pos.sl_price = exit_prices(entry, pos.tp_pct, pos.sl_pct)
+    # A target set before the fill wins over the percentage — the operator
+    # named a price, and the percentage was only ever a way to reach one.
+    override = _target_override(pos)
+    if override:
+        pos.tp_price = override
+        if entry:
+            pos.tp_pct = round((override / entry - 1) * 100, 2)
     tp = client.place_option_order(
         underlying=pos.underlying, occ_symbol=pos.occ_symbol,
         side="sell_to_close", quantity=pos.contracts,
@@ -405,8 +422,83 @@ def live_quotes(user: User, rows) -> dict[str, dict]:
     return out
 
 
-def close_position(db: Session, user: User, position_id: int) -> TradierPosition:
-    """Manual close from the desk: cancel whatever rests, sell at market."""
+def set_target(db: Session, user: User, position_id: int,
+               target_price: float) -> TradierPosition:
+    """Move a live position's take-profit to an explicit price.
+
+    For an OPEN position the resting sell is replaced on the venue, so the
+    exit still happens without us. The dangerous part is the swap: if the old
+    order filled between our cancel and our replace we would be selling a
+    position we no longer hold, so the old order's status is re-read after
+    the cancel and a filled one aborts the edit — the monitor then finalizes
+    it normally.
+
+    For a PENDING position there is no resting order yet; the target is
+    recorded and armed at fill instead.
+    """
+    pos = db.get(TradierPosition, position_id)
+    if pos is None or pos.user_id != user.user_id:
+        raise TradierBotError(f"position {position_id} not found", 404)
+    if pos.status not in ACTIVE_STATUSES:
+        raise TradierBotError(
+            f"position {position_id} is {pos.status} — only a live position "
+            "has a target to move", 409)
+    try:
+        target = round(float(target_price), 2)
+    except (TypeError, ValueError) as exc:
+        raise TradierBotError("target must be a price") from exc
+    if target <= 0:
+        raise TradierBotError("target must be greater than zero")
+    if pos.sl_price and target <= pos.sl_price:
+        raise TradierBotError(
+            f"target {target:.2f} is at or below the stop {pos.sl_price:.2f} — "
+            "the position would be stopped out before it could ever reach it", 409)
+
+    client = client_for(user, live=not pos.sandbox)
+    try:
+        if pos.status == "open" and pos.tp_order_id:
+            try:
+                client.cancel_order(pos.tp_order_id)
+            except TradierError:
+                pass                      # already gone; the status check rules
+            st = (client.order_status(pos.tp_order_id).get("status") or "").lower()
+            if st == "filled":
+                raise TradierBotError(
+                    "the take-profit filled while the target was being moved — "
+                    "the position is already closing", 409)
+            order = client.place_option_order(
+                underlying=pos.underlying, occ_symbol=pos.occ_symbol,
+                side="sell_to_close", quantity=pos.contracts,
+                order_type="limit", price=target, duration="gtc",
+            )
+            pos.tp_order_id = str(order["id"])
+            pos.note = (f"target moved to {target:.2f}"
+                        + (f" (entry {pos.entry_price:.2f})" if pos.entry_price else ""))
+        else:
+            pos.note = f"target {target:.2f} set; arms when the buy fills"
+    finally:
+        client.close()
+
+    pos.tp_price = target
+    if pos.entry_price:
+        pos.tp_pct = round((target / pos.entry_price - 1) * 100, 2)
+    raw = dict(pos.raw or {})
+    raw["tp_override"] = {"price": target, "at": _now().isoformat()}
+    pos.raw = raw
+    db.commit()
+    db.refresh(pos)
+    return pos
+
+
+def close_position(db: Session, user: User, position_id: int,
+                   force: bool = False) -> TradierPosition:
+    """Manual close from the desk: cancel whatever rests, sell at market.
+
+    ``force`` only applies to a PENDING row on the SANDBOX whose cancel the
+    venue refuses: the row stops being tracked so the desk can be cleared.
+    It is deliberately not available on the live account — abandoning a real
+    working order would leave a position nobody is watching.
+    """
     pos = db.get(TradierPosition, position_id)
     if pos is None or pos.user_id != user.user_id:
         raise TradierBotError(f"position {position_id} not found", 404)
@@ -417,7 +509,36 @@ def close_position(db: Session, user: User, position_id: int) -> TradierPosition
     client = client_for(user, live=not pos.sandbox)
     try:
         if pos.status == "pending" and pos.buy_order_id:
-            client.cancel_order(pos.buy_order_id)
+            try:
+                client.cancel_order(pos.buy_order_id)
+            except TradierError as exc:
+                # A cancel can fail because the order is already gone — or
+                # because the venue itself is unwell (Tradier's sandbox 500s
+                # on DELETE while happily serving the same order on GET).
+                # Ask what the order actually IS before deciding.
+                try:
+                    st = (client.order_status(pos.buy_order_id).get("status")
+                          or "").lower()
+                except TradierError:
+                    st = ""
+                if st in ("canceled", "cancelled", "expired", "rejected"):
+                    pass                  # already dead; fall through and close
+                elif st == "filled":
+                    raise TradierBotError(
+                        "the buy filled while it was being cancelled — refresh "
+                        "and close the position instead", 409) from exc
+                elif force and pos.sandbox:
+                    _finalize(pos, "failed", None,
+                              f"stopped tracking: venue would not cancel "
+                              f"({str(exc)[:80]}); order may still rest on the "
+                              f"sandbox")
+                    db.commit()
+                    return pos
+                else:
+                    raise TradierBotError(
+                        f"the venue refused to cancel this order and it is "
+                        f"still {st or 'working'} — the position is untouched. "
+                        f"({exc})", 502) from exc
             _finalize(pos, "failed", None, "buy cancelled from the desk")
         else:
             if pos.tp_order_id:

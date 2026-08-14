@@ -356,3 +356,96 @@ def test_live_marks_only_attach_to_active_rows(client, fake, db_user, user):
     assert rows[closed.id]["live_pnl_usd"] is None
     assert rows[closed.id]["pnl_usd"] == pytest.approx(40.0)   # realized, untouched
     assert rows[still_open.id]["live_bid"] == pytest.approx(0.90)
+
+
+# ── editable take-profit ────────────────────────────────────────────────────
+
+def test_moving_the_target_replaces_the_resting_sell(fake, db_user):
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    old_tp = pos.tp_order_id
+    assert pos.tp_price == pytest.approx(0.58)
+
+    tradier_bot.set_target(db, user, pos.id, 0.75)
+    db.refresh(pos)
+
+    assert pos.tp_price == pytest.approx(0.75)
+    assert old_tp in fake.cancelled                    # the old one is gone
+    assert pos.tp_order_id != old_tp                   # and a new one rests
+    new = fake.orders[pos.tp_order_id]
+    assert new["side"] == "sell_to_close"
+    assert new["price"] == pytest.approx(0.75)
+    assert new["qty"] == pos.contracts                 # never more than we hold
+    # the percent is restated against the real entry
+    assert pos.tp_pct == pytest.approx(50.0)
+
+
+def test_a_target_that_filled_mid_edit_aborts_instead_of_double_selling(fake, db_user):
+    """The dangerous swap: cancel fails because it already filled. Placing the
+    replacement anyway would sell a position we no longer hold."""
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    old_tp = pos.tp_order_id
+    fake.cancel_fails.add(old_tp)
+    fake.status[old_tp] = {"status": "filled", "avg_fill_price": 0.58}
+    sells_before = sum(1 for o in fake.orders.values() if o["side"] == "sell_to_close")
+
+    with pytest.raises(tradier_bot.TradierBotError) as exc:
+        tradier_bot.set_target(db, user, pos.id, 0.75)
+    assert exc.value.status_code == 409
+
+    sells_after = sum(1 for o in fake.orders.values() if o["side"] == "sell_to_close")
+    assert sells_after == sells_before                 # no second sell stacked
+
+
+def test_target_below_the_stop_is_refused(fake, db_user):
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.sl_price == pytest.approx(0.35)
+    with pytest.raises(tradier_bot.TradierBotError):
+        tradier_bot.set_target(db, user, pos.id, 0.30)
+
+
+def test_target_set_before_the_fill_arms_at_that_price(fake, db_user):
+    """A pending buy has no resting sell yet — the target is remembered and
+    beats the percentage when the exits are armed."""
+    db, user = db_user
+    pos = _open(db, user)
+    assert pos.status == "pending"
+
+    tradier_bot.set_target(db, user, pos.id, 0.90)
+    db.refresh(pos)
+    assert pos.tp_price == pytest.approx(0.90)
+    assert pos.tp_order_id is None                     # nothing resting yet
+
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "open"
+    # 15% of 0.50 would have been 0.58 — the explicit target wins
+    assert pos.tp_price == pytest.approx(0.90)
+    assert fake.orders[pos.tp_order_id]["price"] == pytest.approx(0.90)
+
+
+def test_target_cannot_be_moved_on_a_finished_position(fake, db_user):
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    fake.status[pos.tp_order_id] = {"status": "filled", "avg_fill_price": 0.58}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "tp_filled"
+    with pytest.raises(tradier_bot.TradierBotError) as exc:
+        tradier_bot.set_target(db, user, pos.id, 0.99)
+    assert exc.value.status_code == 409

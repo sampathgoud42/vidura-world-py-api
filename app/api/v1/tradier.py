@@ -424,6 +424,30 @@ def open_position(payload: OpenRequest, db: Session = Depends(get_db)) -> dict:
     return _pos_out(pos)
 
 
+class TargetRequest(BaseModel):
+    user_id: str
+    target_price: float = Field(..., gt=0, le=10_000,
+                                description="new take-profit price for this contract")
+
+
+@router.post("/positions/{position_id}/target", operation_id="setTradierTarget")
+def set_target(position_id: int, payload: TargetRequest,
+               db: Session = Depends(get_db)) -> dict:
+    """Move a live position's take-profit to an explicit price.
+
+    Replaces the resting sell on the venue so the exit still happens without
+    the desk running. Refuses if the old take-profit filled mid-edit, rather
+    than stacking a second sell on a position that is already closing.
+    """
+    require_local_runtime("Moving a Tradier take-profit")
+    user = _user_or_404(db, payload.user_id)
+    try:
+        pos = tradier_bot.set_target(db, user, position_id, payload.target_price)
+    except Exception as exc:                          # noqa: BLE001
+        raise _translated(exc) from exc
+    return _pos_out(pos)
+
+
 @router.get("/positions", operation_id="listTradierPositions")
 def list_positions(
     user_id: str = Query(...),
@@ -482,12 +506,17 @@ def sweep(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
 
 @router.post("/positions/{position_id}/close", operation_id="closeTradierPosition")
 def close_position(position_id: int, user_id: str = Query(...),
+                   force: bool = Query(
+                       default=False,
+                       description="sandbox only: stop tracking a pending row "
+                                   "whose cancel the venue refuses"),
                    db: Session = Depends(get_db)) -> dict:
     """Manual exit: cancel resting orders, sell at market."""
     require_local_runtime("Closing a Tradier position")
     user = _user_or_404(db, user_id)
     try:
-        return _pos_out(tradier_bot.close_position(db, user, position_id))
+        return _pos_out(tradier_bot.close_position(db, user, position_id,
+                                                   force=force))
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc
 
