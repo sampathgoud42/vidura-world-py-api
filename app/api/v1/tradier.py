@@ -510,7 +510,28 @@ def autotrade_status(user_id: str = Query(...)) -> dict:
     return auto_trade.status(user_id)
 
 
+def _limit_price(p: TradierPosition) -> float | None:
+    """The limit the buy was placed at — the ask when the contract was picked."""
+    raw = p.raw if isinstance(p.raw, dict) else {}
+    try:
+        return float((raw.get("picked") or {}).get("ask"))
+    except (TypeError, ValueError):
+        return None
+
+
 def _pos_out(p: TradierPosition, quote: dict | None = None) -> dict:
+    # TP/SL are percentages OF THE FILL, so they cannot be final until the
+    # buy fills. While it is still working, show what they would be at the
+    # limit price and mark them provisional — blank cells read as "stale"
+    # when the truth is "this order has not filled yet".
+    tp_price, sl_price = p.tp_price, p.sl_price
+    provisional = False
+    if p.status == "pending" and p.entry_price is None and tp_price is None:
+        limit = _limit_price(p)
+        if limit:
+            tp_price, sl_price = tradier_bot.exit_prices(limit, p.tp_pct, p.sl_pct)
+            provisional = True
+
     # Unrealized mark and P&L for a position that is still running. Priced on
     # the BID: that is what closing it right now would actually pay.
     live_bid = live_pnl = None
@@ -529,7 +550,9 @@ def _pos_out(p: TradierPosition, quote: dict | None = None) -> dict:
         "option_type": p.option_type, "strike": p.strike,
         "expiration": p.expiration, "delta_at_entry": p.delta_at_entry,
         "contracts": p.contracts, "entry_price": p.entry_price,
-        "tp_price": p.tp_price, "sl_price": p.sl_price,
+        "tp_price": tp_price, "sl_price": sl_price,
+        "exits_provisional": provisional,
+        "limit_price": _limit_price(p) if p.entry_price is None else None,
         "tp_pct": p.tp_pct, "sl_pct": p.sl_pct, "buy_pct": p.buy_pct,
         "exit_price": p.exit_price, "pnl_usd": p.pnl_usd,
         "note": p.note,

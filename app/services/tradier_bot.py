@@ -231,19 +231,26 @@ def open_position(
 
 # ── monitor ─────────────────────────────────────────────────────────────────
 
+def exit_prices(entry: float, tp_pct: float, sl_pct: float) -> tuple[float, float]:
+    """(take-profit, stop) for an entry price.
+
+    Ceil to the penny, not round(): round(0.575, 2) is 0.57 under banker's
+    rounding — a TP that sells BELOW the promised percent. Ceiling errs
+    protective on both sides: the TP never sells under its target, the SL
+    never stops later than its floor.
+    """
+    def _ceil_penny(x: float) -> float:
+        return math.ceil(x * 100 - 1e-6) / 100.0
+
+    return (_ceil_penny(entry * (1 + tp_pct / 100.0)),
+            _ceil_penny(entry * (1 - sl_pct / 100.0)))
+
+
 def _place_tp(client: TradierClient, pos: TradierPosition) -> None:
     """Entry filled -> arm the exits. TP rests on the venue (survives us);
     the SL threshold is stored and watched by the sweep."""
     entry = pos.entry_price or 0
-    # Ceil to the penny, not round(): round(0.575, 2) is 0.57 under
-    # banker's rounding - a TP that sells BELOW the promised percent.
-    # Ceiling errs protective on both sides: the TP never sells under
-    # its target, the SL never stops later than its floor.
-    def _ceil_penny(x: float) -> float:
-        return math.ceil(x * 100 - 1e-6) / 100.0
-
-    pos.tp_price = _ceil_penny(entry * (1 + pos.tp_pct / 100.0))
-    pos.sl_price = _ceil_penny(entry * (1 - pos.sl_pct / 100.0))
+    pos.tp_price, pos.sl_price = exit_prices(entry, pos.tp_pct, pos.sl_pct)
     tp = client.place_option_order(
         underlying=pos.underlying, occ_symbol=pos.occ_symbol,
         side="sell_to_close", quantity=pos.contracts,
