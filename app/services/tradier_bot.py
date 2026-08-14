@@ -434,18 +434,74 @@ def monitor_pass(db: Session, user: User) -> dict:
     return {"checked": len(rows), "events": events}
 
 
+def _seconds_since(pos: TradierPosition) -> float | None:
+    """Seconds since the buy filled, or None if that was never stamped."""
+    raw = pos.raw if isinstance(pos.raw, dict) else {}
+    stamp = raw.get("filled_at")
+    if not stamp:
+        return None
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except (TypeError, ValueError):
+        return None
+    return (_now() - when).total_seconds()
+
+
+def _held_quantity(client: TradierClient, occ_symbol: str) -> float:
+    """How many of this contract the ACCOUNT says it holds (0 if none)."""
+    try:
+        for p in client.positions():
+            if (p.get("symbol") or "").upper() == (occ_symbol or "").upper():
+                return abs(float(p.get("quantity") or 0))
+    except (TradierError, TypeError, ValueError):
+        return 0.0        # unknown is treated as not-yet: never sell blind
+    return 0.0
+
+
 def _monitor_one(client: TradierClient, pos: TradierPosition,
                  events: list[str]) -> None:
     if pos.status == "pending":
-        order = client.order_status(pos.buy_order_id)
-        st = (order.get("status") or "").lower()
-        if st == "filled":
-            pos.entry_price = float(order.get("avg_fill_price") or 0)
-            _place_tp(client, pos)
-            events.append(f"#{pos.id} filled @ {pos.entry_price:.2f}; exits armed")
-        elif st in ("canceled", "rejected", "expired"):
-            _finalize(pos, "failed", None, f"buy {st}; nothing at risk")
-            events.append(f"#{pos.id} buy {st}")
+        # Two steps, not one. A buy that reports "filled" is not yet a
+        # position: the holding lands on the books a beat later, and a
+        # sell_to_close into that gap is what the venue rejects. So the fill
+        # is recorded first, and the exits are armed on a later pass once the
+        # wait has elapsed AND the account actually shows the contract.
+        if pos.entry_price is None:
+            order = client.order_status(pos.buy_order_id)
+            st = (order.get("status") or "").lower()
+            if st == "filled":
+                pos.entry_price = float(order.get("avg_fill_price") or 0)
+                raw = dict(pos.raw or {})
+                raw["filled_at"] = _now().isoformat()
+                pos.raw = raw
+                delay = get_settings().tradier_arm_delay_s
+                pos.note = (f"filled @ {pos.entry_price:.2f}; confirming the "
+                            f"position before arming exits ({delay}s)")
+                events.append(f"#{pos.id} filled @ {pos.entry_price:.2f}; "
+                              f"confirming the position")
+            elif st in ("canceled", "rejected", "expired"):
+                _finalize(pos, "failed", None, f"buy {st}; nothing at risk")
+                events.append(f"#{pos.id} buy {st}")
+            return
+
+        # filled, waiting to arm
+        delay = get_settings().tradier_arm_delay_s
+        waited = _seconds_since(pos)
+        if waited is not None and waited < delay:
+            return
+        held = _held_quantity(client, pos.occ_symbol)
+        if held <= 0:
+            # Not on the books yet. Say so once, then keep checking — the
+            # contract IS owned, so giving up would leave it unmanaged.
+            if "not on the books" not in (pos.note or ""):
+                pos.note = (f"filled @ {pos.entry_price:.2f}; position not on "
+                            f"the books yet — exits not armed")
+                events.append(f"#{pos.id} filled but the position is not on "
+                              f"the books yet; holding off on the exits")
+            return
+        _place_tp(client, pos)
+        events.append(f"#{pos.id} position confirmed ({held:g}); exits armed "
+                      f"— TP {pos.tp_price:.2f}, SL {pos.sl_price:.2f}")
         return
 
     # open: TP filled? then SL?

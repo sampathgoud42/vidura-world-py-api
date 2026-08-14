@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     # enormous size and cannot be managed with a percentage TP. Priced below
     # this, a contract is a lottery ticket, not flow worth acting on.
     tradier_flow_min_price: float = 0.30
+
+    # --- exits -----------------------------------------------------------
+    # A buy reporting "filled" is not the same as the position being on the
+    # books. Selling into that gap is what Tradier rejects, so the exits wait
+    # this long AND until the holding is visible before they are armed.
+    tradier_arm_delay_s: int = 30
     tradier_flow_ttl_s: int = 300              # snapshot age before a refresh
     tradier_flow_workers: int = 6              # parallel chain fetches
 

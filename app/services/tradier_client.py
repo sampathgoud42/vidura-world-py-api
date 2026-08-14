@@ -240,6 +240,20 @@ class TradierClient:
             raise TradierError(f"order not accepted: {d}")
         return order
 
+    def positions(self) -> list[dict]:
+        """What the account actually HOLDS: ``[{symbol, quantity, cost_basis}]``.
+
+        A fill is not the same thing as a position: the order can report
+        filled a beat before the holding is on the books, and a
+        sell_to_close against a position the venue does not think you have
+        is rejected.
+        """
+        d = self._req("GET", f"/accounts/{self.creds.account_id}/positions")
+        node = d.get("positions")
+        if not node or node == "null":
+            return []
+        return _as_list(node.get("position"))
+
     def order_status(self, order_id: int | str) -> dict:
         d = self._req(
             "GET", f"/accounts/{self.creds.account_id}/orders/{order_id}"

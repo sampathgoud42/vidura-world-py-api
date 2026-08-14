@@ -41,6 +41,7 @@ class FakeTradier:
         self.cancel_fails: set[str] = set()
         self.cancelled: list[str] = []
         self._next = 100
+        self.held: dict[str, float] = {}
         self.creds = TradierCredentials(
             access_token="test", account_id="TEST", sandbox=sandbox,
             base_url=None,
@@ -50,6 +51,9 @@ class FakeTradier:
         return {"option_buying_power": 500.0, "total_cash": 500.0,
                 "total_equity": 500.0, "open_pl": 0.0,
                 "account_id": "TEST", "sandbox": True}
+
+    def positions(self):
+        return [{"symbol": s, "quantity": q} for s, q in self.held.items()]
 
     def expirations(self, symbol):
         # Relative to today, or the non-0DTE filter empties the list the
@@ -95,6 +99,11 @@ def fake(monkeypatch):
     venue = FakeTradier()
     monkeypatch.setattr(tradier_bot, "client_for",
                         lambda user, **kw: venue)
+    # The arm DELAY has its own test; everywhere else the interesting
+    # gate is whether the account shows the position, not the clock.
+    from app.core.config import get_settings
+    monkeypatch.setattr(get_settings(), "tradier_arm_delay_s", 0,
+                        raising=False)
     return venue
 
 
@@ -139,6 +148,20 @@ def _open(db, user):
     )
 
 
+def _fill_and_arm(db, user, fake, pos, px=0.50):
+    """Fill the buy and run the monitor until the exits are armed.
+
+    Two passes on purpose: the first records the fill, the second confirms
+    the account holds the contract and only then rests the TP.
+    """
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": px}
+    fake.held[pos.occ_symbol] = pos.contracts      # the venue books it
+    tradier_bot.monitor_pass(db, user)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    return pos
+
+
 def test_open_sizes_and_buys(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
@@ -153,9 +176,7 @@ def test_open_sizes_and_buys(fake, db_user):
 def test_fill_arms_tp_and_sl(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     assert pos.status == "open"
     assert pos.entry_price == 0.50
     # +15% of 0.50 is 0.575; the penny grid CEILS to 0.58 so the TP can
@@ -170,9 +191,7 @@ def test_fill_arms_tp_and_sl(fake, db_user):
 def test_tp_fill_closes_with_pnl(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     fake.status[pos.tp_order_id] = {"status": "filled", "avg_fill_price": 0.58}
     tradier_bot.monitor_pass(db, user)
     db.refresh(pos)
@@ -184,9 +203,7 @@ def test_tp_fill_closes_with_pnl(fake, db_user):
 def test_sl_cancels_tp_before_selling(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     fake.bid = 0.34                                # below the 0.35 stop
     tradier_bot.monitor_pass(db, user)
     db.refresh(pos)
@@ -202,9 +219,7 @@ def test_sl_cancels_tp_before_selling(fake, db_user):
 def test_tp_winning_the_sl_race_is_a_win_not_a_double_sell(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     # the cancel fails because the TP just filled — the exit already happened
     fake.cancel_fails.add(pos.tp_order_id)
     fake.status[pos.tp_order_id] = {"status": "filled", "avg_fill_price": 0.575}
@@ -221,10 +236,14 @@ def test_multiple_positions_run_side_by_side(fake, db_user):
     b = tradier_bot.open_position(db, user, symbol="SPY", side="put", buy_pct=20)
     assert a.id != b.id
     fake.status[a.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    fake.held[a.occ_symbol] = a.contracts
     fake.status[b.buy_order_id] = {"status": "canceled"}
-    out = tradier_bot.monitor_pass(db, user)
-    db.refresh(a); db.refresh(b)
+    # both rows are live on the first pass; by the second, b is already
+    # finalized and only a is still being managed
+    out = tradier_bot.monitor_pass(db, user)    # records the fill, fails b
     assert out["checked"] == 2
+    tradier_bot.monitor_pass(db, user)          # confirms the position, arms a
+    db.refresh(a); db.refresh(b)
     assert a.status == "open" and b.status == "failed"
 
 
@@ -336,9 +355,7 @@ def test_live_marks_only_attach_to_active_rows(client, fake, db_user, user):
     open row's quote and show a live P&L beside its realized one."""
     db, u = db_user
     closed = tradier_bot.open_position(db, u, symbol="SPY", side="call")
-    fake.status[closed.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, u)
-    db.refresh(closed)
+    _fill_and_arm(db, u, fake, closed)
     fake.status[closed.tp_order_id] = {"status": "filled", "avg_fill_price": 0.58}
     tradier_bot.monitor_pass(db, u)
     db.refresh(closed)
@@ -369,9 +386,7 @@ def test_live_marks_only_attach_to_active_rows(client, fake, db_user, user):
 def test_moving_the_target_replaces_the_resting_sell(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     old_tp = pos.tp_order_id
     assert pos.tp_price == pytest.approx(0.58)
 
@@ -394,9 +409,7 @@ def test_a_target_that_filled_mid_edit_aborts_instead_of_double_selling(fake, db
     replacement anyway would sell a position we no longer hold."""
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     old_tp = pos.tp_order_id
     fake.cancel_fails.add(old_tp)
     fake.status[old_tp] = {"status": "filled", "avg_fill_price": 0.58}
@@ -413,9 +426,7 @@ def test_a_target_that_filled_mid_edit_aborts_instead_of_double_selling(fake, db
 def test_target_below_the_stop_is_refused(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     assert pos.sl_price == pytest.approx(0.35)
     with pytest.raises(tradier_bot.TradierBotError):
         tradier_bot.set_target(db, user, pos.id, 0.30)
@@ -433,9 +444,7 @@ def test_target_set_before_the_fill_arms_at_that_price(fake, db_user):
     assert pos.tp_price == pytest.approx(0.90)
     assert pos.tp_order_id is None                     # nothing resting yet
 
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     assert pos.status == "open"
     # 15% of 0.50 would have been 0.58 — the explicit target wins
     assert pos.tp_price == pytest.approx(0.90)
@@ -445,9 +454,7 @@ def test_target_set_before_the_fill_arms_at_that_price(fake, db_user):
 def test_target_cannot_be_moved_on_a_finished_position(fake, db_user):
     db, user = db_user
     pos = _open(db, user)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     fake.status[pos.tp_order_id] = {"status": "filled", "avg_fill_price": 0.58}
     tradier_bot.monitor_pass(db, user)
     db.refresh(pos)
@@ -495,9 +502,7 @@ def test_the_named_contract_is_managed_like_any_other(fake, db_user):
     _quoting_fake(fake)
     pos = tradier_bot.open_contract(db, user, occ_symbol="TSLA260814C00350000",
                                     buy_pct=50, tp_pct=15, sl_pct=30)
-    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
-    tradier_bot.monitor_pass(db, user)
-    db.refresh(pos)
+    _fill_and_arm(db, user, fake, pos, 0.50)
     assert pos.status == "open"
     assert pos.tp_price == pytest.approx(0.58)       # +15%, ceiled to the penny
     assert pos.sl_price == pytest.approx(0.35)       # -30%
@@ -557,3 +562,91 @@ def test_no_non_zero_dte_expiry_is_a_clear_refusal(fake, db_user, monkeypatch):
     with pytest.raises(tradier_bot.TradierBotError) as exc:
         tradier_bot.open_position(db, user, symbol="SPY", side="call")
     assert "non-0DTE" in str(exc.value)
+
+
+# ── exits wait for the position to exist ────────────────────────────────────
+
+def _fill(fake, pos, px=0.50, *, book=True):
+    """Report the buy as filled, and optionally put it on the books."""
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": px}
+    if book:
+        fake.held[pos.occ_symbol] = pos.contracts
+
+
+def _age_fill(db, pos, seconds):
+    """Backdate the fill stamp so the arm delay has elapsed."""
+    from datetime import datetime, timedelta, timezone
+    raw = dict(pos.raw or {})
+    raw["filled_at"] = (datetime.now(timezone.utc).replace(tzinfo=None)
+                        - timedelta(seconds=seconds)).isoformat()
+    pos.raw = raw
+    db.commit()
+
+
+def test_a_fill_does_not_arm_the_exits_immediately(fake, db_user):
+    """The bug: selling into the gap between "filled" and the holding being
+    on the books is what the venue rejects."""
+    db, user = db_user
+    pos = _open(db, user)
+    _fill(fake, pos)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "pending"          # not armed yet
+    assert pos.entry_price == pytest.approx(0.50)   # but the fill is recorded
+    assert pos.tp_order_id is None
+    assert not any(o["side"] == "sell_to_close" for o in fake.orders.values())
+
+
+def test_exits_arm_once_the_wait_passes_and_the_position_shows(fake, db_user):
+    db, user = db_user
+    pos = _open(db, user)
+    _fill(fake, pos)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    _age_fill(db, pos, 60)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "open"
+    assert pos.tp_price == pytest.approx(0.58)
+    assert fake.orders[pos.tp_order_id]["side"] == "sell_to_close"
+
+
+def test_no_sell_while_the_account_does_not_show_the_contract(fake, db_user):
+    """Even after the wait: no holding, no sell order."""
+    db, user = db_user
+    pos = _open(db, user)
+    _fill(fake, pos, book=False)            # filled, but not on the books
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    _age_fill(db, pos, 600)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "pending"
+    assert pos.tp_order_id is None
+    assert not any(o["side"] == "sell_to_close" for o in fake.orders.values())
+    assert "not on the books" in (pos.note or "")
+
+    # and it arms the moment the position appears
+    fake.held[pos.occ_symbol] = pos.contracts
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "open"
+    assert fake.orders[pos.tp_order_id]["side"] == "sell_to_close"
+
+
+def test_a_venue_that_cannot_answer_is_treated_as_not_held(fake, db_user):
+    """An unreadable positions call must never be read as "go ahead"."""
+    db, user = db_user
+    pos = _open(db, user)
+    _fill(fake, pos)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    _age_fill(db, pos, 60)
+
+    def boom():
+        raise TradierError("positions unavailable", 500)
+    fake.positions = boom
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "pending"
+    assert pos.tp_order_id is None
