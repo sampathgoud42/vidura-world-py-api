@@ -357,6 +357,9 @@ def chain_preview(
     delta_min: float = Query(default=tradier_bot.DEFAULT_DELTA_MIN, gt=0, lt=1),
     delta_max: float = Query(default=tradier_bot.DEFAULT_DELTA_MAX, gt=0, le=1),
     expiration: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    expiries: int = Query(default=1, ge=1, le=6,
+                          description="how many expirations to try before "
+                                      "giving up on the delta band"),
     live: bool = Query(default=False,
                        description="true prices from the PRODUCTION venue"),
     db: Session = Depends(get_db),
@@ -372,29 +375,43 @@ def chain_preview(
     except Exception as exc:                          # noqa: BLE001
         raise _translated(exc) from exc
     try:
-        exp = expiration or (client.expirations(symbol.upper()) or [None])[0]
-        if exp is None:
+        sym = symbol.upper()
+        if expiration:
+            candidates = [expiration]
+        else:
+            candidates = (client.expirations(sym) or [])[:expiries]
+        if not candidates:
             raise HTTPException(status_code=404, detail=f"no expirations for {symbol}")
-        raw = client.chain(symbol.upper(), exp)
-        band = []
-        for o in raw:
-            g = o.get("greeks") or {}
-            d = g.get("delta")
-            if d is None or (o.get("option_type") or "").lower() != side:
-                continue
-            if delta_min <= abs(float(d)) <= delta_max:
-                band.append({
-                    "occ_symbol": o.get("symbol"), "strike": o.get("strike"),
-                    "bid": o.get("bid"), "ask": o.get("ask"),
-                    "delta": round(abs(float(d)), 4),
-                    "volume": o.get("volume"), "open_interest": o.get("open_interest"),
-                })
-        pick = tradier_bot.pick_contract(raw, side, delta_min, delta_max)
-        return {
-            "symbol": symbol.upper(), "expiration": exp, "side": side,
-            "band": sorted(band, key=lambda x: x["delta"], reverse=True),
-            "pick": (pick or {}).get("symbol"),
-        }
+
+        # Walk out until the band has something. The nearest expiry is often
+        # 0DTE, whose deltas sit near 0 or 1 — a mid-band request against it
+        # comes back empty most of the afternoon.
+        tried: list[str] = []
+        for exp in candidates:
+            raw = client.chain(sym, exp)
+            band = []
+            for o in raw:
+                g = o.get("greeks") or {}
+                d = g.get("delta")
+                if d is None or (o.get("option_type") or "").lower() != side:
+                    continue
+                if delta_min <= abs(float(d)) <= delta_max:
+                    band.append({
+                        "occ_symbol": o.get("symbol"), "strike": o.get("strike"),
+                        "bid": o.get("bid"), "ask": o.get("ask"),
+                        "delta": round(abs(float(d)), 4),
+                        "volume": o.get("volume"),
+                        "open_interest": o.get("open_interest"),
+                    })
+            tried.append(exp)
+            pick = tradier_bot.pick_contract(raw, side, delta_min, delta_max)
+            if band or pick or exp == candidates[-1]:
+                return {
+                    "symbol": sym, "expiration": exp, "side": side,
+                    "band": sorted(band, key=lambda x: x["delta"], reverse=True),
+                    "pick": (pick or {}).get("symbol"),
+                    "tried": tried,
+                }
     except TradierError as exc:
         raise _translated(exc) from exc
     finally:
