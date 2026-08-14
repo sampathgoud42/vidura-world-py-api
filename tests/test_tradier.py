@@ -42,6 +42,7 @@ class FakeTradier:
         self.cancelled: list[str] = []
         self._next = 100
         self.held: dict[str, float] = {}
+        self.orders_book: dict[str, dict] = {}
         self.creds = TradierCredentials(
             access_token="test", account_id="TEST", sandbox=sandbox,
             base_url=None,
@@ -74,10 +75,31 @@ class FakeTradier:
                            order_type="limit", price=None, duration="day"):
         self._next += 1
         oid = str(self._next)
-        self.orders[oid] = {"side": side, "qty": quantity, "type": order_type,
-                            "price": price, "occ": occ_symbol}
+        rec = {"side": side, "qty": quantity, "type": order_type,
+               "price": price, "occ": occ_symbol}
+        self.orders[oid] = rec
+        self.orders_book[oid] = rec
         self.status[oid] = {"status": "open"}
         return {"id": oid, "status": "ok"}
+
+    LIVE_ORDER_STATUSES = ("open", "partially_filled", "pending", "submitted",
+                           "accepted", "queued")
+
+    # NB: `self.orders` is the dict of placed orders, so the account-wide
+    # listing cannot also be called `orders` here — the instance attribute
+    # would shadow the method.
+    def order_list(self):
+        return [{"id": oid, "option_symbol": o["occ"], "side": o["side"],
+                 "status": (self.status.get(oid) or {}).get("status", "open"),
+                 "quantity": o["qty"], "price": o["price"]}
+                for oid, o in self.orders_book.items()]
+
+    def resting_sells(self, occ_symbol):
+        want = (occ_symbol or "").upper()
+        return [o for o in self.order_list()
+                if (o["option_symbol"] or "").upper() == want
+                and str(o["side"]).startswith("sell")
+                and str(o["status"]).lower() in self.LIVE_ORDER_STATUSES]
 
     def order_status(self, oid):
         return self.status.get(str(oid), {"status": "open"})
@@ -650,3 +672,137 @@ def test_a_venue_that_cannot_answer_is_treated_as_not_held(fake, db_user):
     db.refresh(pos)
     assert pos.status == "pending"
     assert pos.tp_order_id is None
+
+
+# ── never two resting sells on one holding ──────────────────────────────────
+
+def _sell_count(fake, occ=None):
+    return sum(1 for o in fake.orders.values()
+               if o["side"] == "sell_to_close" and (occ is None or o["occ"] == occ))
+
+
+def test_a_second_monitor_pass_does_not_stack_another_sell(fake, db_user):
+    """The background loop and the desk sweep both run this. Two resting
+    sells on one holding is a short position waiting to happen."""
+    db, user = db_user
+    pos = _fill_and_arm(db, user, fake, _open(db, user))
+    assert pos.status == "open"
+    assert _sell_count(fake, pos.occ_symbol) == 1
+
+    for _ in range(3):
+        tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert _sell_count(fake, pos.occ_symbol) == 1
+
+
+def test_a_sell_already_covering_the_holding_blocks_another(fake, db_user):
+    """Our stored id would miss an order placed by another copy of the
+    monitor — the ACCOUNT is what gets asked, and the test is whether the
+    holding is already spoken for."""
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    fake.held[pos.occ_symbol] = pos.contracts
+    tradier_bot.monitor_pass(db, user)          # records the fill
+    db.refresh(pos)
+
+    # someone else rests a sell on the same contract
+    fake.place_option_order(
+        underlying="SPY", occ_symbol=pos.occ_symbol, side="sell_to_close",
+        quantity=pos.contracts, order_type="limit", price=0.61, duration="gtc")
+    before = _sell_count(fake, pos.occ_symbol)
+
+    tradier_bot.monitor_pass(db, user)          # would have armed
+    db.refresh(pos)
+
+    # every contract held is already spoken for, so nothing is added
+    assert _sell_count(fake, pos.occ_symbol) == before
+    assert pos.status == "pending"
+    assert "already have a resting sell" in (pos.note or "")
+
+
+def test_a_filled_sell_does_not_block_a_fresh_one(fake, db_user):
+    """Only a WORKING order counts as resting; a filled one is history."""
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    fake.held[pos.occ_symbol] = pos.contracts
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    stale = fake.place_option_order(
+        underlying="SPY", occ_symbol=pos.occ_symbol, side="sell_to_close",
+        quantity=pos.contracts, order_type="limit", price=0.61, duration="gtc")
+    fake.status[stale["id"]] = {"status": "filled"}
+
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "open"
+    assert pos.tp_order_id != stale["id"]
+    assert pos.tp_price == pytest.approx(0.58)      # its own 15% target
+
+
+def test_an_unreadable_order_book_arms_nothing(fake, db_user):
+    """If the book cannot be read, do not add to it."""
+    db, user = db_user
+    pos = _open(db, user)
+    fake.status[pos.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    fake.held[pos.occ_symbol] = pos.contracts
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+
+    def boom(occ):
+        raise TradierError("orders unavailable", 500)
+    fake.resting_sells = boom
+
+    tradier_bot.monitor_pass(db, user)          # swallowed as a venue error
+    db.refresh(pos)
+    assert pos.status == "pending"
+    assert _sell_count(fake, pos.occ_symbol) == 0
+
+
+def test_two_positions_on_one_contract_each_get_their_own_exit(fake, db_user):
+    """The guard is arithmetic, not identity: 3 held + 3 held is 6, and six
+    contracts deserve two exits."""
+    db, user = db_user
+    a = _fill_and_arm(db, user, fake, _open(db, user))
+    b = tradier_bot.open_position(db, user, symbol="SPY", side="call", buy_pct=50)
+    assert b.occ_symbol == a.occ_symbol
+    fake.status[b.buy_order_id] = {"status": "filled", "avg_fill_price": 0.50}
+    fake.held[b.occ_symbol] = a.contracts + b.contracts     # the venue holds both
+    tradier_bot.monitor_pass(db, user)
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(a); db.refresh(b)
+    assert a.status == "open" and b.status == "open"
+    assert a.tp_order_id != b.tp_order_id
+    assert _sell_count(fake, a.occ_symbol) == 2
+
+
+def test_an_open_row_the_account_no_longer_backs_is_closed(fake, db_user):
+    """The exit filled somewhere we did not see it. Leaving the row open
+    would keep the stop watching a holding that is not there."""
+    db, user = db_user
+    pos = _fill_and_arm(db, user, fake, _open(db, user))
+    assert pos.status == "open"
+
+    # the sell fills and the holding goes, but we never observe the fill
+    fake.status[pos.tp_order_id] = {"status": "canceled"}
+    fake.held.pop(pos.occ_symbol, None)
+
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "closed"
+    assert pos.exit_price is not None
+    assert pos.closed_at is not None
+
+
+def test_a_cancelled_exit_is_re_armed_while_the_holding_remains(fake, db_user):
+    """The other half of the same branch: still held, so it gets an exit."""
+    db, user = db_user
+    pos = _fill_and_arm(db, user, fake, _open(db, user))
+    old_tp = pos.tp_order_id
+    fake.status[old_tp] = {"status": "canceled"}
+    tradier_bot.monitor_pass(db, user)
+    db.refresh(pos)
+    assert pos.status == "open"
+    assert pos.tp_order_id != old_tp
+    assert _sell_count(fake, pos.occ_symbol) == 2   # the dead one plus the new

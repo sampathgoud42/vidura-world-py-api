@@ -254,6 +254,41 @@ class TradierClient:
             return []
         return _as_list(node.get("position"))
 
+    # statuses that mean an order is still working at the venue
+    LIVE_ORDER_STATUSES = ("open", "partially_filled", "pending", "submitted",
+                           "accepted", "queued")
+
+    def orders(self) -> list[dict]:
+        """Every order on the account, newest first."""
+        d = self._req("GET", f"/accounts/{self.creds.account_id}/orders",
+                      params={"includeTags": "false"})
+        node = d.get("orders")
+        if not node or node == "null":
+            return []
+        return _as_list(node.get("order"))
+
+    def resting_sells(self, occ_symbol: str) -> list[dict]:
+        """Every sell on this contract that is still working.
+
+        The account is the authority on what is resting. Trusting our own
+        stored order id instead would miss a sell placed by anything else —
+        including a second copy of this monitor.
+
+        Plural on purpose: several positions can legitimately hold the same
+        contract, each with its own exit, so the question is never "is there
+        a sell?" but "how many contracts are already spoken for?".
+        """
+        want = (occ_symbol or "").upper()
+        out = []
+        for o in self.orders():
+            sym = (o.get("option_symbol") or o.get("symbol") or "").upper()
+            side = (o.get("side") or "").lower()
+            status = (o.get("status") or "").lower()
+            if sym == want and side.startswith("sell") \
+                    and status in self.LIVE_ORDER_STATUSES:
+                out.append(o)
+        return out
+
     def order_status(self, order_id: int | str) -> dict:
         d = self._req(
             "GET", f"/accounts/{self.creds.account_id}/orders/{order_id}"

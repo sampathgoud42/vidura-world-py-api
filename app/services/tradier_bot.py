@@ -361,9 +361,43 @@ def _target_override(pos: TradierPosition) -> float | None:
 
 def _place_tp(client: TradierClient, pos: TradierPosition) -> None:
     """Entry filled -> arm the exits. TP rests on the venue (survives us);
-    the SL threshold is stored and watched by the sweep."""
+    the SL threshold is stored and watched by the sweep.
+
+    Never places a second sell. The background monitor and the desk's sweep
+    both run this loop, in different threads and sessions, so two passes can
+    reach the same freshly-filled row — and two resting sells on one holding
+    is a short position waiting to happen. The ACCOUNT is asked what is
+    already working rather than trusting our own stored id, which would miss
+    an order placed by the other copy.
+    """
     entry = pos.entry_price or 0
     pos.tp_price, pos.sl_price = exit_prices(entry, pos.tp_pct, pos.sl_pct)
+
+    # Our own order, still working, is the plain duplicate case.
+    if pos.tp_order_id:
+        try:
+            st = (client.order_status(pos.tp_order_id).get("status") or "").lower()
+        except TradierError:
+            raise
+        if st in TradierClient.LIVE_ORDER_STATUSES:
+            pos.status = "open"
+            logger.info("tradier: #%s already has sell %s resting",
+                        pos.id, pos.tp_order_id)
+            return
+
+    # Otherwise the test is arithmetic, not identity: several positions can
+    # legitimately hold this contract, each with its own exit. What must
+    # never happen is resting MORE sells than the account holds — that is a
+    # short position by accident.
+    resting = client.resting_sells(pos.occ_symbol)
+    spoken_for = sum(abs(float(o.get("quantity") or 0)) for o in resting)
+    held = _held_quantity(client, pos.occ_symbol)
+    if spoken_for + pos.contracts > held:
+        pos.note = (f"filled @ {entry:.2f}; exits not armed — {spoken_for:g} of "
+                    f"{held:g} held already have a resting sell")
+        logger.warning("tradier: #%s refused a TP — %s resting vs %s held on %s",
+                       pos.id, spoken_for, held, pos.occ_symbol)
+        return
     # A target set before the fill wins over the percentage — the operator
     # named a price, and the percentage was only ever a way to reach one.
     override = _target_override(pos)
@@ -515,11 +549,44 @@ def _monitor_one(client: TradierClient, pos: TradierPosition,
             events.append(f"#{pos.id} TP filled @ {pos.exit_price:.2f}")
             return
         if st in ("canceled", "rejected", "expired"):
-            # someone cancelled our TP out from under us — re-arm it rather
-            # than leave the position with no exit order at all
+            # The order is gone. Before re-arming, ask whether the POSITION
+            # is gone too: a sell that filled without us seeing it looks
+            # exactly like this, and re-arming would rest a sell against a
+            # holding that no longer exists — the rejection loop this whole
+            # change exists to end.
+            if _held_quantity(client, pos.occ_symbol) <= 0:
+                exit_px = None
+                try:
+                    exit_px = float(tp.get("avg_fill_price") or 0) or None
+                except (TypeError, ValueError):
+                    exit_px = None
+                if exit_px is None:
+                    exit_px = pos.tp_price
+                _finalize(pos, "closed", exit_px,
+                          f"exit order {st} and the account holds none — "
+                          f"closed at the last known exit price")
+                events.append(f"#{pos.id} exit {st} and nothing held; "
+                              f"marked closed")
+                return
+            # still holding it — re-arm rather than leave it with no exit
             _place_tp(client, pos)
             events.append(f"#{pos.id} TP was {st}; re-armed")
             return
+
+    # An open row the account no longer backs is finished, however it ended:
+    # the exit filled somewhere we did not observe, or it was closed by hand.
+    # Leaving it "open" would keep the stop monitoring a holding that is not
+    # there, and eventually try to sell it.
+    if not client.resting_sells(pos.occ_symbol) \
+            and _held_quantity(client, pos.occ_symbol) <= 0:
+        quote = client.quote(pos.occ_symbol)
+        exit_px = float(quote.get("bid") or 0) or pos.tp_price
+        _finalize(pos, "closed", exit_px,
+                  "no holding and no resting exit — closed against the "
+                  "last quote")
+        events.append(f"#{pos.id} no longer held and nothing resting; "
+                      f"marked closed")
+        return
 
     quote = client.quote(pos.occ_symbol)
     bid = float(quote.get("bid") or 0)
