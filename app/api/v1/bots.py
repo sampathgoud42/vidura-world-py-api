@@ -152,6 +152,7 @@ def _start(db: Session, bot_key: str, payload: BotStartRequest) -> BotRunOut:
         mode=payload.mode,
         sports=payload.sports,
         sport_settings=payload.sport_settings,
+        parley=payload.parley.model_dump(exclude_none=True) if payload.parley else None,
         target_pct=payload.target_pct,
         tp_pct=payload.tp_pct,
         sl_pct=payload.sl_pct,
@@ -350,7 +351,7 @@ def reconcile_open_trades(
     user = _user_or_404(db, user_id)
     # Pull the CSVs in first: a row the bot closed but never synced should be
     # settled from its own ledger, not re-derived from the exchange.
-    _refresh_mirror(db, user_id, ["btc15", "btc60", "sports"])
+    _refresh_mirror(db, user_id, ["btc15", "btc60", "sports", "parley"])
     try:
         return reconcile_svc.reconcile(db, user, hours=hours, dry_run=not apply)
     except reconcile_svc.ReconcileError as exc:
@@ -397,3 +398,85 @@ def sports_trades(
 def sports_sync_trades(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
     user = _user_or_404(db, user_id)
     return ingest.sync_trades(db, user, "sports")
+
+
+# --- parlay endpoints ------------------------------------------------------
+# Its own spec path rather than a version of /bots/sports/*: it is a separate
+# process with its own bankroll, ledger and CSV, and it can run alongside the
+# sports bot. Sharing that path would have made "stop sports" ambiguous.
+
+@router.get("/parley/processes", operation_id="getParleyBotProcesses")
+def parley_processes() -> dict:
+    return _processes("parley")
+
+
+@router.post("/parley/kill", operation_id="killParleyBotProcesses")
+def parley_kill(
+    pids: str | None = Query(default=None, description="comma-separated; omit to kill all"),
+    db: Session = Depends(get_db),
+) -> dict:
+    parsed = [int(p) for p in pids.split(",") if p.strip().isdigit()] if pids else None
+    return _kill(db, "parley", parsed)
+
+
+@router.get("/parley/status", operation_id="getParleyBotStatus", response_model=BotStatusOut)
+def parley_status(
+    user_id: str | None = Query(default=None), db: Session = Depends(get_db)
+) -> BotStatusOut:
+    return _status(db, "parley", user_id)
+
+
+@router.post("/parley/start", operation_id="startParleyBot", response_model=BotRunOut,
+             status_code=status.HTTP_201_CREATED)
+def parley_start(payload: BotStartRequest, db: Session = Depends(get_db)) -> BotRunOut:
+    return _start(db, "parley", payload)
+
+
+@router.post("/parley/stop", operation_id="stopParleyBot", response_model=list[BotRunOut])
+def parley_stop(payload: BotStopRequest, db: Session = Depends(get_db)) -> list[BotRunOut]:
+    return _stop(db, "parley", payload)
+
+
+@router.get("/parley/logs", operation_id="getParleyBotLogs", response_model=BotLogsOut)
+def parley_logs(
+    user_id: str | None = Query(default=None),
+    run_id: int | None = Query(default=None),
+    lines: int = Query(default=100, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> BotLogsOut:
+    return _logs(db, "parley", user_id, run_id, lines)
+
+
+@router.get("/parley/trades", operation_id="getParleyTrades", response_model=TradeHistoryPage)
+def parley_trades(
+    user_id: str | None = Query(default=None),
+    days: int | None = Query(default=None, ge=1, le=3660),
+    mode: str = Query(default="live", pattern="^(live|paper|all)$",
+                      description="live = real money only (default), paper, or all"),
+    limit: int = Query(default=100, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> TradeHistoryPage:
+    _refresh_mirror(db, user_id, ["parley"])
+    total, items = trades_svc.query_trades(
+        db, user_id=user_id, bot_key="parley", days=days, mode=mode,
+        limit=limit, offset=offset
+    )
+    return TradeHistoryPage(total=total, items=[TradeOut.model_validate(t) for t in items])
+
+
+@router.get("/parley/active-bets", operation_id="getParleyActiveBets", response_model=list[TradeOut])
+def parley_active_bets(
+    user_id: str | None = Query(default=None), db: Session = Depends(get_db)
+) -> list[TradeOut]:
+    _refresh_mirror(db, user_id, ["parley"])
+    return [
+        TradeOut.model_validate(t)
+        for t in trades_svc.active_trades(db, user_id=user_id, bot_key="parley")
+    ]
+
+
+@router.post("/parley/sync-trades", operation_id="syncParleyTrades")
+def parley_sync_trades(user_id: str = Query(...), db: Session = Depends(get_db)) -> dict:
+    user = _user_or_404(db, user_id)
+    return ingest.sync_trades(db, user, "parley")

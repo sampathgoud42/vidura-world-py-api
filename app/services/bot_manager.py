@@ -87,6 +87,7 @@ def _base_env(mode: str = "paper") -> dict[str, str]:
                 "DRY_RUN_MODE": "FALSE",
                 "BOT152_DRY_RUN": "FALSE",
                 "MAIN_PAPER": "FALSE",
+                "PARLEY_PAPER": "FALSE",
             }
         )
     else:
@@ -95,6 +96,14 @@ def _base_env(mode: str = "paper") -> dict[str, str]:
                 "DRY_RUN_MODE": "TRUE",   # btc15 v2-v4, btc60, sports secrets
                 "BOT152_DRY_RUN": "TRUE",  # btc15 v5
                 "MAIN_PAPER": "TRUE",      # sports main bot
+                "PARLEY_PAPER": "TRUE",    # parlay bot
+                # A paper parlay must not write to the exchange either. The
+                # bot's own default CREATES the combined market so paper can
+                # price against a real book — but creation is a POST, and
+                # Kalshi caps creations at 5000/week. A freshly created combo
+                # has an empty book anyway (nothing quotes it), so paper
+                # prices the combo theoretically instead and touches nothing.
+                "PARLEY_PAPER_CREATE_MARKET": "FALSE",
             }
         )
     return env
@@ -144,6 +153,66 @@ def _sports_env(env: dict[str, str], options: "BotStartOptions") -> None:
         env["TARGET_PORTFOLIO_PCT"] = f"{options.target_pct:g}"
 
 
+# The parlay bot only knows how to qualify a tennis leg — set/lead state is
+# sport-specific and it ships one qualifier (_QUALIFIERS in the script). Any
+# other sport would be discovered and then silently skipped every scan, so the
+# choice is refused at launch rather than left to look like it took effect.
+PARLEY_SPORTS = ("tennis",)
+
+
+def _parley_env(env: dict[str, str], options: "BotStartOptions") -> None:
+    """Map launch options onto the parlay bot's PARLEY_* knobs.
+
+    Its risk keys go through the same SportConfig/SportBook the per-sport
+    banks use, so bank/contracts/bank-stop mean exactly what they mean on the
+    sports desk. Selection and execution are its own.
+    """
+    if options.sports:
+        bad = [s for s in options.sports if s not in PARLEY_SPORTS]
+        if bad:
+            raise BotManagerError(
+                f"Parlay legs are only qualified for {list(PARLEY_SPORTS)}; "
+                f"got {bad}. Set/lead state is sport-specific — the bot ships "
+                "one qualifier.",
+                422,
+            )
+        env["PARLEY_SPORTS_LIST"] = ",".join(options.sports)
+    if options.contracts:
+        env["PARLEY_CONTRACTS"] = str(options.contracts)
+    if options.bank is not None:
+        env["PARLEY_BANK"] = f"{options.bank:g}"
+    if options.bank_sl_pct is not None:
+        # SportBook's own halt: realized session loss >= this % of the bank
+        # stops NEW parlays while the open one stays managed.
+        env["PARLEY_STOP_LOSS_PCT"] = f"{options.bank_sl_pct:g}"
+
+    p = options.parley or {}
+    # cents and counts, straight through — no percent translation. This bot
+    # prices in cents (a 97c ceiling, a stop 20c under entry), and rendering
+    # that as a percentage would be a knob that reads differently than it acts.
+    mapping = {
+        "min_prob_c": "PARLEY_MIN_PROB_C",
+        "min_set": "PARLEY_MIN_SET",
+        "lead_scope": "PARLEY_LEAD_SCOPE",
+        "min_legs": "PARLEY_MIN_LEGS",
+        "max_legs": "PARLEY_MAX_LEGS",
+        "max_open": "PARLEY_MAX_OPEN",
+        "slippage_c": "PARLEY_SLIPPAGE_C",
+        "max_price_c": "PARLEY_MAX_PRICE_C",
+        "tp_ceiling_c": "PARLEY_TP_CEILING_C",
+        "stop_loss_c": "PARLEY_STOP_LOSS_C",
+    }
+    for field, key in mapping.items():
+        value = p.get(field)
+        if value is not None:
+            env[key] = f"{value:g}" if isinstance(value, float) else str(value)
+    if p.get("cooldown_min") is not None:
+        env["PARLEY_COOLDOWN_S"] = str(int(round(float(p["cooldown_min"]) * 60)))
+    if p.get("limit_fallback") is not None:
+        # empty book + TRUE = rest a maker buy at the theoretical price
+        env["PARLEY_LIMIT_FALLBACK"] = "TRUE" if p["limit_fallback"] else "FALSE"
+
+
 def _bankroll_env(env: dict[str, str], options: "BotStartOptions") -> None:
     """Per-bot bankroll and a profit target measured ON THAT BANKROLL.
 
@@ -186,6 +255,12 @@ _SHOWN_ENV = (
     "BTC15_BANK_SL_PCT", "BTC60_BANK_SL_PCT", "NO_TRADE_TIMES",
     "TARGET_PORTFOLIO_PCT", "DO_NOT_BUY_IF_PORTFOLIO_BELOW",
     "HALT_MACHINE_SHUTDOWN", "PAPER_TRADING",
+    "PARLEY_SPORTS_LIST", "PARLEY_MIN_PROB_C", "PARLEY_MIN_SET",
+    "PARLEY_LEAD_SCOPE", "PARLEY_MIN_LEGS", "PARLEY_MAX_LEGS",
+    "PARLEY_MAX_OPEN", "PARLEY_COOLDOWN_S", "PARLEY_BANK",
+    "PARLEY_CONTRACTS", "PARLEY_STOP_LOSS_PCT", "PARLEY_TP_CEILING_C",
+    "PARLEY_STOP_LOSS_C", "PARLEY_SLIPPAGE_C", "PARLEY_MAX_PRICE_C",
+    "PARLEY_LIMIT_FALLBACK", "PARLEY_PAPER",
 )
 
 # btc15 v5 has no stop-loss at all — "anything unsold rides to settlement".
@@ -264,11 +339,12 @@ class BotStartOptions:
     def __init__(
         self, mode: str = "paper", sports=None, sport_settings=None, target_pct=None,
         contracts=None, kill_existing: bool = False, tp_pct=None, sl_pct=None,
-        bank=None, bank_sl_pct=None, no_trade_times=None,
+        bank=None, bank_sl_pct=None, no_trade_times=None, parley=None,
     ):
         self.mode = mode
         self.sports = sports
         self.sport_settings = sport_settings
+        self.parley = parley or {}
         self.target_pct = target_pct
         self.tp_pct = tp_pct
         self.sl_pct = sl_pct
@@ -345,7 +421,27 @@ def _launch_plan(
         env.setdefault("MAIN_TRADE_CSV", str(trade_dir / "trade_history_main.csv"))
         env.setdefault("MAIN_PAPER_CSV", str(trade_dir / "paper_trades_main.csv"))
         env.setdefault("BASEBALL_TRADE_CSV", str(trade_dir / "trade_history_baseball.csv"))
-        _sports_env(env, options)
+        if spec.key == "parley":
+            # The parlay bot imports the sports engine, so it wants the pins
+            # above — but its own knobs are PARLEY_*, and _sports_env's
+            # MAIN_SPORTS_LIST/<SPORT>_* would land on the engine's config
+            # instead of on it.
+            #
+            # Its CSV and combination ledger are named for the mode it runs
+            # in, and mode is decided here, so both are pinned here too —
+            # a paper run must never write over the live ledger.
+            paper = options.mode != "live"
+            env.setdefault(
+                "PARLEY_TRADE_CSV",
+                str(trade_dir / ("paper_parley.csv" if paper else "trade_history_parley.csv")),
+            )
+            env.setdefault(
+                "PARLEY_LEDGER",
+                str(trade_dir / ("parley_ledger_paper.json" if paper else "parley_ledger.json")),
+            )
+            _parley_env(env, options)
+        else:
+            _sports_env(env, options)
     else:  # pragma: no cover - registry misconfiguration
         raise BotManagerError(f"Unknown launch style {spec.launch_style}", 500)
     # family-independent options go last so no launch style can skip them
@@ -414,7 +510,7 @@ def _check_paper_conflict(user: User) -> None:
     from dotenv import dotenv_values
 
     values = {k: (v or "") for k, v in dotenv_values(creds.env_file).items()}
-    for key in ("DRY_RUN_MODE", "BOT152_DRY_RUN", "MAIN_PAPER"):
+    for key in ("DRY_RUN_MODE", "BOT152_DRY_RUN", "MAIN_PAPER", "PARLEY_PAPER"):
         raw = values.get(key, "").strip().upper()
         if raw in ("FALSE", "0", "NO"):
             raise BotManagerError(
@@ -546,6 +642,8 @@ def start_bot(
             extra["sl_pct"] = options.sl_pct
         if options.bank is not None:
             extra["bank"] = options.bank
+        if options.parley:
+            extra["parley"] = options.parley
         # What the process ACTUALLY got, for the desk to show while it runs.
         # Built from the resolved env rather than the request, so a knob this
         # engine never received cannot appear as though it were in force.

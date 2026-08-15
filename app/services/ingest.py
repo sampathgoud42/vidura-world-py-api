@@ -176,7 +176,7 @@ def _map_btc60(row: dict, version: str, *, is_paper: bool) -> dict | None:
     }
 
 
-def _map_sports(row: dict, *, is_paper: bool, source: str) -> dict | None:
+def _map_sports(row: dict, *, is_paper: bool, source: str, bot_key: str = "sports") -> dict | None:
     ticker = (row.get("ticker") or "").strip()
     ts_epoch = (row.get("ts_epoch") or "").strip()
     if not ticker or not ts_epoch:
@@ -204,14 +204,17 @@ def _map_sports(row: dict, *, is_paper: bool, source: str) -> dict | None:
     fill = _f(row.get("fill_price")) or _f(row.get("buy_price"))
     contracts = _i(row.get("contracts"))
     return {
-        "bot_key": "sports",
+        "bot_key": bot_key,
         "bot_version": source,
         # ts_epoch is the bots' row key, but real ledgers contain duplicate
         # ts_epoch values for distinct trades, so ticker joins the key and
         # sync_trades adds an occurrence suffix for exact repeats. The key
         # must NOT include the source tag: the same ledger can be visible
         # under two filenames (trade_history.csv vs trade_history_sports.csv).
-        "external_id": f"sports:{ts_epoch}:{ticker}",
+        # It IS keyed by bot, though — the parlay bot writes the same row
+        # shape from a separate ledger, and one key space would let the two
+        # collide on a shared timestamp.
+        "external_id": f"{bot_key}:{ts_epoch}:{ticker}",
         "ticker": ticker,
         "market_title": (row.get("name") or row.get("player") or row.get("team") or "").strip() or None,
         "side": "yes",  # sports bots only ever buy YES
@@ -254,6 +257,11 @@ def _candidate_files(user: User, bot_key: str) -> list[tuple[Path, str]]:
         out.append((trade_dir / "trade_history_sports.csv", "sports_v1_live"))
         out.append((trade_dir / "trade_history.csv", "sports_v1_live"))
         out.append((trade_dir / "trade_history_baseball.csv", "sports_v2_live"))
+    elif bot_key == "parley":
+        # Same row shape as the sports bots (it writes through their engine),
+        # from its own pair of ledgers — paper and live never share a file.
+        out.append((trade_dir / "trade_history_parley.csv", "parley_v1_live"))
+        out.append((trade_dir / "paper_parley.csv", "parley_v1_paper"))
     return [(p, tag) for p, tag in out if p.is_file()]
 
 
@@ -268,6 +276,10 @@ def _map_row(tag: str, row: dict) -> dict | None:
     if tag.startswith("sports_"):
         _, source, mode = tag.split("_")
         return _map_sports(row, is_paper=(mode == "paper"), source=source)
+    if tag.startswith("parley_"):
+        _, source, mode = tag.split("_")
+        return _map_sports(row, is_paper=(mode == "paper"), source=source,
+                           bot_key="parley")
     return None
 
 

@@ -65,7 +65,7 @@ from app.services import credentials, kalshi_client
 logger = logging.getLogger(__name__)
 
 # Every family whose rows live on the Kalshi account.
-BOT_KEYS = ("btc15", "btc60", "btcperp", "sports")
+BOT_KEYS = ("btc15", "btc60", "btcperp", "sports", "parley")
 
 # A position younger than this is not suspicious — the bot is probably just
 # holding it. The window is the whole point of the check: it separates "still

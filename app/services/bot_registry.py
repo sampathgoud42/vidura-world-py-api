@@ -87,6 +87,18 @@ BOTS: dict[str, BotSpec] = {
         # sports bots take the customer name as argv[1] plus SPORTS_* env vars.
         launch_style="argv_customer",
     ),
+    "parley": BotSpec(
+        key="parley",
+        name="Kalshi live-sport parlay bot",
+        category="sports",
+        cadence="live-match",
+        versions=(
+            BotVersion("v1", f"{_SPORTS_DIR}/bot_kalshi_parley.py", default=True),
+        ),
+        # Same family as the sports bots — it imports their engine, so it
+        # inherits the customer-as-argv[1] contract along with the plumbing.
+        launch_style="argv_customer",
+    ),
 }
 
 

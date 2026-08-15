@@ -36,6 +36,71 @@ class SportSettings(BaseModel):
     )
 
 
+class ParleySettings(BaseModel):
+    """Parlay-bot tuning (maps to PARLEY_* env).
+
+    Deliberately in cents and counts rather than percentages: this bot prices
+    in cents — a 97c take-profit ceiling, a stop 20c under entry — so a
+    percent knob would read differently than it acts. Bankroll, contracts and
+    the bank stop come from the shared top-level fields, since they go through
+    the same SportConfig/SportBook the per-sport banks use.
+    """
+
+    min_prob_c: int | None = Field(
+        default=None, ge=50, le=99,
+        description="a leg needs a YES price strictly ABOVE this (80 = 'odds > 80%')",
+        examples=[80],
+    )
+    min_set: int | None = Field(
+        default=None, ge=1, le=5, description="match must be at least in this set",
+        examples=[2],
+    )
+    lead_scope: str | None = Field(
+        default=None, pattern="^(current|second|off)$",
+        description="which set the above-threshold participant must LEAD: "
+                    "current (the set in progress) | second | off (price only)",
+        examples=["current"],
+    )
+    min_legs: int | None = Field(
+        default=None, ge=2, le=12,
+        description="fewer qualifying legs than this → no parlay (2 is also the "
+                    "exchange's own collection minimum)",
+    )
+    max_legs: int | None = Field(
+        default=None, ge=0, le=12, description="0 = take every qualifying live match"
+    )
+    max_open: int | None = Field(default=None, ge=1, le=10, description="concurrent open parlays")
+    cooldown_min: float | None = Field(
+        default=None, ge=0, le=1440,
+        description="minimum gap between two parlays, minutes (PARLEY_COOLDOWN_S)",
+        examples=[15],
+    )
+    slippage_c: int | None = Field(
+        default=None, ge=0, le=20,
+        description="cents crossed above the ask. The V2 order API has no market "
+                    "order type, so a market order is sent as a marketable "
+                    "immediate-or-cancel at ask + this.",
+    )
+    max_price_c: int | None = Field(
+        default=None, ge=2, le=99, description="never pay more than this per combo contract"
+    )
+    tp_ceiling_c: int | None = Field(
+        default=None, ge=2, le=99, description="resting take-profit sell, in cents"
+    )
+    stop_loss_c: int | None = Field(
+        default=None, ge=0, le=99,
+        description="entry-relative stop: exit once the bid is this many cents "
+                    "under the entry (0 disables)",
+    )
+    limit_fallback: bool | None = Field(
+        default=None,
+        description="A freshly created combined market has an EMPTY book, so a "
+                    "market order fills nothing and the bot takes no position. "
+                    "True instead rests a good-till-cancelled maker buy at the "
+                    "theoretical price (the product of the leg probabilities).",
+    )
+
+
 class BotStartRequest(BaseModel):
     user_id: str
     version: str | None = Field(default=None, examples=["v2"])
@@ -52,6 +117,12 @@ class BotStartRequest(BaseModel):
         default=None,
         description="per-sport contracts/bank, keyed by sport name",
         examples=[{"tennis": {"contracts": 20, "bank": 300}}],
+    )
+    parley: ParleySettings | None = Field(
+        default=None,
+        description="parlay-bot selection and execution knobs (ignored by every "
+                    "other bot). Its sports list reuses `sports` — but only "
+                    "tennis has a leg qualifier, so anything else is refused.",
     )
     target_pct: float | None = Field(
         default=None, ge=0, le=1000,

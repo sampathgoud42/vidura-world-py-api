@@ -50,9 +50,12 @@ def test_bot_registry_lists_all_bots(client):
     resp = client.get("/api/v1/bots")
     assert resp.status_code == 200
     bots = {b["key"]: b for b in resp.json()}
-    assert set(bots) == {"btc15", "btc60", "sports"}
+    assert set(bots) == {"btc15", "btc60", "sports", "parley"}
     assert any(v["version"] == "v2" for v in bots["btc15"]["versions"])
     assert any(v["version"] == "fable5" for v in bots["btc60"]["versions"])
+    # the parlay script must be VENDORED, not merely registered — a registry
+    # entry pointing at nothing reports "exists": false and 503s on start
+    assert all(v["exists"] for v in bots["parley"]["versions"]), bots["parley"]
 
 
 def test_btc_lifecycle_start_status_logs_stop(client, user, fake_btc15):

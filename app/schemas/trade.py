@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-BotKey = Literal["btc15", "btc60", "sports", "manual"]
+BotKey = Literal["btc15", "btc60", "sports", "parley", "manual"]
 
 
 def to_naive_utc(value: datetime | None) -> datetime | None:
