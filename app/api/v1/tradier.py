@@ -439,6 +439,16 @@ class OpenRequest(BaseModel):
     side: str = Field(..., pattern="^(call|put)$")
     buy_pct: float = Field(default=tradier_bot.DEFAULT_BUY_PCT, gt=0, le=100,
                            description="% of option buying power to spend")
+    tolerance_pct: float = Field(
+        default=tradier_bot.DEFAULT_TOLERANCE_PCT, ge=0, le=100,
+        description="how far either side of the buy_pct budget the total may "
+                    "land. Contracts are indivisible, so the budget is a "
+                    "target: at 50% of $100 with +/-25% the window is "
+                    "$37.50-$62.50, which buys one contract at 0.60 (a strict "
+                    "budget buys none) and two at 0.30 (a strict budget buys "
+                    "one and parks $20). 0 restores the strict behaviour.",
+        examples=[25],
+    )
     delta_min: float = Field(default=tradier_bot.DEFAULT_DELTA_MIN, gt=0, lt=1)
     delta_max: float = Field(default=tradier_bot.DEFAULT_DELTA_MAX, gt=0, le=1)
     tp_pct: float = Field(default=tradier_bot.DEFAULT_TP_PCT, gt=0, le=500,
@@ -469,6 +479,7 @@ def open_position(payload: OpenRequest, db: Session = Depends(get_db)) -> dict:
         pos = tradier_bot.open_position(
             db, user,
             symbol=payload.symbol, side=payload.side, buy_pct=payload.buy_pct,
+            tolerance_pct=payload.tolerance_pct,
             delta_min=payload.delta_min, delta_max=payload.delta_max,
             tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
             expiration=payload.expiration, live=payload.live,
@@ -485,6 +496,10 @@ class ContractRequest(BaseModel):
     user_id: str
     occ_symbol: str = Field(..., max_length=32, examples=["TSLA260814C00350000"])
     buy_pct: float = Field(default=tradier_bot.DEFAULT_BUY_PCT, gt=0, le=100)
+    tolerance_pct: float = Field(
+        default=tradier_bot.DEFAULT_TOLERANCE_PCT, ge=0, le=100,
+        description="how far either side of the buy_pct budget the total may land",
+    )
     tp_pct: float = Field(default=tradier_bot.DEFAULT_TP_PCT, gt=0, le=500)
     sl_pct: float = Field(default=tradier_bot.DEFAULT_SL_PCT, gt=0, lt=100)
     live: bool = Field(default=False,
@@ -503,6 +518,7 @@ def open_contract(payload: ContractRequest, db: Session = Depends(get_db)) -> di
     try:
         pos = tradier_bot.open_contract(
             db, user, occ_symbol=payload.occ_symbol, buy_pct=payload.buy_pct,
+            tolerance_pct=payload.tolerance_pct,
             tp_pct=payload.tp_pct, sl_pct=payload.sl_pct, live=payload.live,
         )
     except Exception as exc:                          # noqa: BLE001
@@ -621,6 +637,10 @@ class AutoTradeStart(BaseModel):
     window_close: str | None = Field(default=None, pattern=r"^\d{2}:\d{2}$",
                                      description="HH:MM CST")
     buy_pct: float | None = Field(default=None, gt=0, le=100)
+    tolerance_pct: float | None = Field(
+        default=None, ge=0, le=100,
+        description="how far either side of the buy_pct budget a total may "
+                    "land; 0 makes the budget a hard cap")
     tp_pct: float | None = Field(default=None, gt=0, le=500)
     sl_pct: float | None = Field(default=None, gt=0, lt=100)
     delta_min: float | None = Field(default=None, gt=0, lt=1)
@@ -664,7 +684,8 @@ def autotrade_start(payload: AutoTradeStart, db: Session = Depends(get_db)) -> d
             payload.user_id,
             strategy=payload.strategy, tickers=payload.tickers,
             window_open=payload.window_open, window_close=payload.window_close,
-            buy_pct=payload.buy_pct, tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
+            buy_pct=payload.buy_pct, tolerance_pct=payload.tolerance_pct,
+            tp_pct=payload.tp_pct, sl_pct=payload.sl_pct,
             delta_min=payload.delta_min, delta_max=payload.delta_max,
             min_contracts=payload.min_contracts, live=payload.live,
             books=payload.books, dte_max=payload.dte_max,
@@ -734,6 +755,9 @@ def _pos_out(p: TradierPosition, quote: dict | None = None) -> dict:
         "exits_provisional": provisional,
         "limit_price": _limit_price(p) if p.entry_price is None else None,
         "tp_pct": p.tp_pct, "sl_pct": p.sl_pct, "buy_pct": p.buy_pct,
+        # what the size actually came to, so the desk can show why it is
+        # that many contracts rather than the round number buy_pct implies
+        "sizing": (p.raw or {}).get("sizing"),
         "exit_price": p.exit_price, "pnl_usd": p.pnl_usd,
         "note": p.note,
         "opened_at": p.opened_at.isoformat() if p.opened_at else None,

@@ -140,11 +140,65 @@ def db_user(client, user):
 
 # ── math ────────────────────────────────────────────────────────────────────
 
+def _lots(balance, pct, price, **kw):
+    return tradier_bot.size_contracts(balance, pct, price, **kw)[0]
+
+
 def test_sizing_matches_the_desk_example():
     # balance 500, bid 0.50, 50% -> 250 / (0.50 * 100) = 5 contracts
-    assert tradier_bot.size_contracts(500, 50, 0.50) == 5
-    assert tradier_bot.size_contracts(500, 50, 0.55) == 4     # floor, never round up
-    assert tradier_bot.size_contracts(100, 50, 0.60) == 0     # cannot afford one
+    assert _lots(500, 50, 0.50, tolerance_pct=0) == 5
+    assert _lots(500, 50, 0.55, tolerance_pct=0) == 4     # floor, never round up
+    assert _lots(100, 50, 0.60, tolerance_pct=0) == 0     # cannot afford one
+
+
+def test_budget_is_a_target_not_a_cap():
+    """The user's worked example (08/15): $100 balance, 50%, +/-25%.
+
+    Budget $50, so the band is $37.50-$62.50. A contract the budget alone
+    cannot buy still trades when one lot lands under the ceiling, and a
+    contract that leaves the budget half-spent takes a second lot.
+    """
+    assert _lots(100, 50, 0.60, tolerance_pct=25) == 1     # $60, was: no trade
+    assert _lots(100, 50, 0.62, tolerance_pct=25) == 1     # $62, at the ceiling
+    assert _lots(100, 50, 0.38, tolerance_pct=25) == 1     # $38, inside as-is
+    assert _lots(100, 50, 0.30, tolerance_pct=25) == 2     # $60, was: 1 for $30
+
+
+def test_the_ceiling_is_a_real_refusal():
+    """The band widens the budget; it does not remove it."""
+    n, sizing = tradier_bot.size_contracts(100, 50, 0.63, tolerance_pct=25)
+    assert n == 0                                          # $63 > $62.50
+    assert sizing["over_ceiling_usd"] == 63.0
+    assert _lots(100, 50, 1.20, tolerance_pct=25) == 0      # nowhere close
+
+
+def test_the_band_leaves_a_well_fitting_size_alone():
+    """A budget already spent to the cent must not drift upward — the band
+    is a tolerance, not a new target."""
+    n, sizing = tradier_bot.size_contracts(100, 50, 0.05, tolerance_pct=25)
+    assert n == 10 and sizing["total_usd"] == 50.0          # not 12 for $60
+    assert _lots(500, 50, 0.50, tolerance_pct=25) == 5       # the desk example
+
+
+def test_zero_tolerance_restores_the_strict_budget():
+    assert _lots(100, 50, 0.60, tolerance_pct=0) == 0
+    assert _lots(100, 50, 0.30, tolerance_pct=0) == 1
+
+
+def test_min_contracts_is_a_floor_not_a_bypass():
+    """min_contracts says how small a trade is worth doing; it never buys
+    past the ceiling."""
+    assert _lots(100, 50, 0.60, tolerance_pct=25, min_contracts=1) == 1
+    assert _lots(100, 50, 0.60, tolerance_pct=25, min_contracts=2) == 0   # $120
+
+
+def test_sizing_reports_the_band_it_used():
+    _, sizing = tradier_bot.size_contracts(100, 50, 0.30, tolerance_pct=25)
+    assert sizing["budget_usd"] == 50.0
+    assert sizing["band_low_usd"] == 37.5
+    assert sizing["band_high_usd"] == 62.5
+    assert sizing["cost_per_contract_usd"] == 30.0
+    assert sizing["total_usd"] == 60.0
 
 
 def test_pick_prefers_mid_band_and_needs_two_sided_quote():

@@ -11,6 +11,11 @@ The trade the desk asked for (user 08/03):
 The x100 contract multiplier is the part the shorthand arithmetic usually
 skips — sizing that forgot it would order 100x too many contracts.
 
+buy_pct is a target, not a cap (user 08/15). Contracts are indivisible, so
+the total is allowed to land within a tolerance band either side of the
+budget — otherwise a contract priced just over it sizes to zero and the
+delta band's own pick never trades. See size_contracts.
+
 Multiple positions run concurrently; each is a row in tradier_positions and
 the monitor sweeps them all. The TP order survives an API restart because it
 rests on the venue; the SL survives because the rows do.
@@ -41,6 +46,7 @@ _S = get_settings()
 DEFAULT_DELTA_MIN = _S.tradier_delta_min
 DEFAULT_DELTA_MAX = _S.tradier_delta_max
 DEFAULT_BUY_PCT = _S.tradier_buy_pct
+DEFAULT_TOLERANCE_PCT = _S.tradier_size_tolerance_pct
 DEFAULT_TP_PCT = _S.tradier_tp_pct
 DEFAULT_SL_PCT = _S.tradier_sl_pct
 
@@ -131,14 +137,82 @@ def pick_contract(chain: list[dict], side: str, delta_min: float,
     return opt
 
 
-def size_contracts(balance_usd: float, buy_pct: float, limit_price: float) -> int:
-    """floor((balance x pct) / (price x 100)) — the x100 is the option
-    multiplier the desk's shorthand omits; without it this would order a
-    hundred times the intended size."""
-    if limit_price <= 0:
-        return 0
+def size_contracts(
+    balance_usd: float,
+    buy_pct: float,
+    limit_price: float,
+    *,
+    tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
+    min_contracts: int = 1,
+) -> tuple[int, dict]:
+    """How many contracts to buy, and the arithmetic that says why.
+
+    The budget is balance x buy_pct — a target, not a hard cap. Contracts are
+    indivisible, so a strict floor() against that target misses the trade in
+    both directions (user 08/15): on a $50 budget a $60 contract sizes to
+    ZERO, even though it is the contract the delta band asked for, and a $30
+    contract sizes to ONE, leaving $20 of the $50 parked.
+
+    So the budget carries a tolerance band, +/- tolerance_pct around it, and
+    the rule is: aim at the budget, accept any whole number of contracts
+    whose total lands inside the band.
+
+        floor((balance x pct) / (price x 100))  <- lots inside the budget
+        under the band's floor -> one more lot, if it fits under the ceiling
+        zero                   -> min_contracts, if it fits
+
+    With $100, 50% and a 25% band the window is $37.50 - $62.50:
+
+        0.60  ->  0 inside budget  ->  1 lot   ($60; before: no trade)
+        0.62  ->  0 inside budget  ->  1 lot   ($62)
+        0.38  ->  1 lot ($38, already inside the band)
+        0.30  ->  1 lot = $30, under the floor  ->  2 lots ($60)
+        0.05  -> 10 lots ($50, dead on the budget — unchanged by the band)
+
+    The x100 is the option multiplier the desk's shorthand omits; without it
+    this would order a hundred times the intended size.
+
+    Returns (contracts, sizing); ``sizing`` carries the band, the per-lot
+    cost and the resulting total so a caller can explain the number — or a
+    refusal — without recomputing any of it.
+    """
+    least = max(1, int(min_contracts))
+    cost = limit_price * 100.0
     budget = balance_usd * (buy_pct / 100.0)
-    return max(0, math.floor(budget / (limit_price * 100.0)))
+    tol = max(0.0, tolerance_pct) / 100.0
+    sizing = {
+        "budget_usd": round(budget, 2),
+        "band_low_usd": round(budget * (1 - tol), 2),
+        "band_high_usd": round(budget * (1 + tol), 2),
+        "tolerance_pct": tolerance_pct,
+        "cost_per_contract_usd": round(cost, 2),
+    }
+    if cost <= 0:
+        return 0, dict(sizing, total_usd=0.0)
+
+    inside = math.floor(budget / cost)      # lots the budget alone pays for
+    if inside <= 0:
+        # One lot costs more than the entire budget. A lot is the smallest
+        # trade there is, so the only question left is the ceiling.
+        want = least
+    elif inside * cost < sizing["band_low_usd"]:
+        # Under-deployed. One more lot is the only count above the budget
+        # that can still land under the ceiling, so it is the only candidate.
+        want = inside + 1
+    else:
+        return inside, dict(sizing, total_usd=round(inside * cost, 2))
+
+    total = want * cost
+    if total > sizing["band_high_usd"]:
+        # Nothing whole fits the band. Fall back to what the budget itself
+        # buys — which is what the caller got before the band existed, and
+        # is zero when even one lot is out of reach.
+        return max(0, inside), dict(
+            sizing,
+            total_usd=round(max(0, inside) * cost, 2),
+            over_ceiling_usd=round(total, 2),
+        )
+    return want, dict(sizing, total_usd=round(total, 2))
 
 
 # ── open ────────────────────────────────────────────────────────────────────
@@ -150,6 +224,7 @@ def open_position(
     symbol: str,
     side: str,
     buy_pct: float = DEFAULT_BUY_PCT,
+    tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
     delta_min: float = DEFAULT_DELTA_MIN,
     delta_max: float = DEFAULT_DELTA_MAX,
     tp_pct: float = DEFAULT_TP_PCT,
@@ -175,6 +250,9 @@ def open_position(
         raise TradierBotError("side must be 'call' or 'put'")
     if not (0 < buy_pct <= 100):
         raise TradierBotError("buy_pct must be in (0, 100]")
+    if not (0 <= tolerance_pct <= 100):
+        raise TradierBotError("tolerance_pct must be in [0, 100] — 0 is the "
+                              "old strict-budget behaviour")
     if not (0 < delta_min < delta_max <= 1):
         raise TradierBotError("need 0 < delta_min < delta_max <= 1")
 
@@ -208,11 +286,16 @@ def open_position(
             )
 
         limit_price = float(opt["ask"])      # what a buy actually costs
-        contracts = size_contracts(buying_power, buy_pct, limit_price)
+        contracts, sizing = size_contracts(
+            buying_power, buy_pct, limit_price,
+            tolerance_pct=tolerance_pct, min_contracts=min_contracts,
+        )
         if contracts < max(1, min_contracts):
             raise TradierBotError(
                 f"sized {contracts} contract(s) — below min_contracts "
                 f"{max(1, min_contracts)}: {buy_pct:g}% of ${buying_power:.2f} "
+                f"is ${sizing['budget_usd']:.2f} (band ${sizing['band_low_usd']:.2f}"
+                f"-${sizing['band_high_usd']:.2f} at +/-{tolerance_pct:g}%) "
                 f"at ${limit_price:.2f} (${limit_price * 100:.2f}/contract) "
                 f"for {opt['symbol']}", 409
             )
@@ -242,11 +325,13 @@ def open_position(
         buy_order_id=str(order["id"]),
         strategy=(strategy or "Manual")[:64],
         status="pending",
-        note=f"buy_to_open {contracts} @ {limit_price:.2f} limit",
+        note=(f"buy_to_open {contracts} @ {limit_price:.2f} limit "
+              f"(${sizing['total_usd']:.2f} of a ${sizing['budget_usd']:.2f} "
+              f"budget, +/-{tolerance_pct:g}%)"),
         raw={"buy_order": order, "picked": {
             "bid": opt.get("bid"), "ask": opt.get("ask"),
             "delta": opt.get("_abs_delta"),
-        }},
+        }, "sizing": sizing},
     )
     db.add(pos)
     db.commit()
@@ -262,6 +347,7 @@ def open_contract(
     *,
     occ_symbol: str,
     buy_pct: float = DEFAULT_BUY_PCT,
+    tolerance_pct: float = DEFAULT_TOLERANCE_PCT,
     tp_pct: float = DEFAULT_TP_PCT,
     sl_pct: float = DEFAULT_SL_PCT,
     min_contracts: int = 1,
@@ -281,6 +367,9 @@ def open_contract(
         raise TradierBotError("an option symbol is required")
     if not (0 < buy_pct <= 100):
         raise TradierBotError("buy_pct must be in (0, 100]")
+    if not (0 <= tolerance_pct <= 100):
+        raise TradierBotError("tolerance_pct must be in [0, 100] — 0 is the "
+                              "old strict-budget behaviour")
 
     client = client_for(user, live=live)
     venue_sandbox = client.creds.sandbox
@@ -299,11 +388,16 @@ def open_contract(
                 f"{occ} has no tradeable offer right now (ask {ask})", 409)
 
         limit_price = ask                    # what a buy actually costs
-        contracts = size_contracts(buying_power, buy_pct, limit_price)
+        contracts, sizing = size_contracts(
+            buying_power, buy_pct, limit_price,
+            tolerance_pct=tolerance_pct, min_contracts=min_contracts,
+        )
         if contracts < max(1, min_contracts):
             raise TradierBotError(
                 f"sized {contracts} contract(s) — below min_contracts "
                 f"{max(1, min_contracts)}: {buy_pct:g}% of ${buying_power:.2f} "
+                f"is ${sizing['budget_usd']:.2f} (band ${sizing['band_low_usd']:.2f}"
+                f"-${sizing['band_high_usd']:.2f} at +/-{tolerance_pct:g}%) "
                 f"at ${limit_price:.2f} (${limit_price * 100:.2f}/contract) "
                 f"for {occ}", 409
             )
@@ -332,10 +426,12 @@ def open_contract(
         buy_order_id=str(order["id"]),
         strategy=(strategy or "Manual")[:64],
         status="pending",
-        note=f"buy_to_open {contracts} @ {limit_price:.2f} limit",
+        note=(f"buy_to_open {contracts} @ {limit_price:.2f} limit "
+              f"(${sizing['total_usd']:.2f} of a ${sizing['budget_usd']:.2f} "
+              f"budget, +/-{tolerance_pct:g}%)"),
         raw={"buy_order": order, "picked": {
             "bid": q.get("bid"), "ask": q.get("ask"), "source": "options flow",
-        }},
+        }, "sizing": sizing},
     )
     db.add(pos)
     db.commit()

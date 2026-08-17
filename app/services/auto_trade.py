@@ -215,7 +215,7 @@ def _place(w: dict, cand: dict) -> None:
         pos = tradier_bot.open_position(
             db, user,
             symbol=cand["ticker"], side=side,
-            buy_pct=p["buy_pct"],
+            buy_pct=p["buy_pct"], tolerance_pct=p["tolerance_pct"],
             delta_min=p["delta_min"], delta_max=p["delta_max"],
             tp_pct=p["tp_pct"], sl_pct=p["sl_pct"],
             expiration=expiration,
@@ -390,7 +390,7 @@ def _ab_place(w: dict, obs: dict, why: str) -> None:
         pos = tradier_bot.open_position(
             db, user,
             symbol=obs["ticker"], side=obs["side"],
-            buy_pct=p["buy_pct"],
+            buy_pct=p["buy_pct"], tolerance_pct=p["tolerance_pct"],
             delta_min=p["delta_min"], delta_max=p["delta_max"],
             tp_pct=p["tp_pct"], sl_pct=p["sl_pct"],
             expiration=obs["expiration"],
@@ -583,6 +583,7 @@ def _run(w: dict) -> None:
 
 
 def start(user_id: str, *, buy_pct: float | None = None,
+          tolerance_pct: float | None = None,
           tp_pct: float | None = None, sl_pct: float | None = None,
           delta_min: float | None = None, delta_max: float | None = None,
           strategy: str | None = None, tickers: str | list[str] | None = None,
@@ -599,6 +600,10 @@ def start(user_id: str, *, buy_pct: float | None = None,
         # a restarted watcher comes back on paper.
         "live": bool(live),
         "buy_pct": s.tradier_buy_pct if buy_pct is None else buy_pct,
+        # buy_pct is a target; this is how far either side of it a whole
+        # number of contracts may land (see tradier_bot.size_contracts).
+        "tolerance_pct": (s.tradier_size_tolerance_pct
+                          if tolerance_pct is None else tolerance_pct),
         "tp_pct": s.tradier_tp_pct if tp_pct is None else tp_pct,
         "sl_pct": s.tradier_sl_pct if sl_pct is None else sl_pct,
         "delta_min": s.tradier_delta_min if delta_min is None else delta_min,
@@ -645,6 +650,8 @@ def start(user_id: str, *, buy_pct: float | None = None,
         raise AutoTradeError("window_open must be before window_close")
     if not (0 < params["buy_pct"] <= 100):
         raise AutoTradeError("buy_pct must be in (0, 100]")
+    if not (0 <= params["tolerance_pct"] <= 100):
+        raise AutoTradeError("tolerance_pct must be in [0, 100]")
     if not (0 < params["delta_min"] < params["delta_max"] <= 1):
         raise AutoTradeError("need 0 < delta_min < delta_max <= 1")
     if params["min_contracts"] < 1:
@@ -707,6 +714,7 @@ def defaults() -> dict:
         "window_open": s.tradier_auto_window_open,
         "window_close": s.tradier_auto_window_close,
         "buy_pct": s.tradier_buy_pct,
+        "tolerance_pct": s.tradier_size_tolerance_pct,
         "tp_pct": s.tradier_tp_pct,
         "sl_pct": s.tradier_sl_pct,
         "min_contracts": s.tradier_auto_min_contracts,

@@ -127,6 +127,10 @@ class Settings(BaseSettings):
     tradier_delta_min: float = 0.25
     tradier_delta_max: float = 0.50
     tradier_buy_pct: float = 50.0        # % of option buying power per trade
+    # Contracts are indivisible, so buy_pct is a target rather than a cap:
+    # the total may land this far either side of it. Without the band a
+    # contract priced over the budget sizes to zero and never trades.
+    tradier_size_tolerance_pct: float = 25.0
     tradier_tp_pct: float = 15.0         # resting sell above entry
     tradier_sl_pct: float = 30.0         # monitored stop below entry
 
