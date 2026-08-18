@@ -102,16 +102,36 @@ def client_for(user: User, *, live: bool = False) -> TradierClient:
 
 # ── selection & sizing ──────────────────────────────────────────────────────
 
+def delta_band(side: str, delta_min: float, delta_max: float) -> tuple[float, float]:
+    """The SIGNED band a side actually trades in.
+
+    A delta band is spoken as a magnitude — "0.25 to 0.45" — because that is
+    how an operator thinks about moneyness. On the tape it is signed: a call's
+    delta runs 0..+1 and a put's runs 0..-1. So the same spoken band means two
+    different searches (user 08/17):
+
+        SPY calls 0.25-0.45  ->  +0.25 .. +0.45
+        SPY puts  0.25-0.45  ->  -0.45 .. -0.25
+
+    Tradier signs them correctly — verified against the live chain, where 122
+    of 211 SPY puts carry a negative delta and the rest are a flat 0.0000.
+    Matching on |delta| got the right contracts by accident of magnitude while
+    being unable to tell a correctly-signed put from a wrongly-signed one, and
+    it recorded every put's entry delta as positive.
+    """
+    lo, hi = sorted((abs(delta_min), abs(delta_max)))
+    return (lo, hi) if side == "call" else (-hi, -lo)
+
+
 def pick_contract(chain: list[dict], side: str, delta_min: float,
                   delta_max: float) -> dict | None:
-    """The option whose |delta| sits closest to the band's middle.
+    """The option whose delta sits closest to the middle of its signed band.
 
-    |delta| everywhere: puts carry negative delta, and filtering on the raw
-    value would find no puts in a 0.25..0.50 band. Requires a live two-sided
-    quote — an option with no bid cannot be exited, so it must never be
-    entered. Ties break toward the tighter spread.
+    Requires a live two-sided quote — an option with no bid cannot be exited,
+    so it must never be entered. Ties break toward the tighter spread.
     """
-    mid_target = (delta_min + delta_max) / 2.0
+    lo, hi = delta_band(side, delta_min, delta_max)
+    mid_target = (lo + hi) / 2.0
     best = None
     for opt in chain:
         if (opt.get("option_type") or "").lower() != side:
@@ -120,8 +140,8 @@ def pick_contract(chain: list[dict], side: str, delta_min: float,
         delta = greeks.get("delta")
         if delta is None:
             continue
-        d = abs(float(delta))
-        if not (delta_min <= d <= delta_max):
+        d = float(delta)                    # signed, exactly as quoted
+        if not (lo <= d <= hi):
             continue
         bid = float(opt.get("bid") or 0)
         ask = float(opt.get("ask") or 0)
@@ -133,7 +153,8 @@ def pick_contract(chain: list[dict], side: str, delta_min: float,
     if best is None:
         return None
     opt = dict(best[1])
-    opt["_abs_delta"] = best[2]
+    opt["_delta"] = best[2]                 # signed: negative for a put
+    opt["_abs_delta"] = abs(best[2])
     return opt
 
 
@@ -280,9 +301,14 @@ def open_position(
         chain = client.chain(symbol, expiration)
         opt = pick_contract(chain, side, delta_min, delta_max)
         if opt is None:
+            # Name the SIGNED band that was searched. "no put with delta in
+            # 0.25-0.45" reads like the band was wrong; "-0.45..-0.25" shows
+            # the search was right for the side and the chain simply had
+            # nothing there — and makes a vendor sign flip obvious on sight.
+            lo, hi = delta_band(side, delta_min, delta_max)
             raise TradierBotError(
-                f"no {side} on {symbol} {expiration} with |delta| in "
-                f"{delta_min:g}-{delta_max:g} and a two-sided quote", 404
+                f"no {side} on {symbol} {expiration} with delta in "
+                f"{lo:+g}..{hi:+g} and a two-sided quote", 404
             )
 
         limit_price = float(opt["ask"])      # what a buy actually costs
@@ -317,7 +343,9 @@ def open_position(
         option_type=side,
         strike=float(opt.get("strike") or 0),
         expiration=expiration,
-        delta_at_entry=opt.get("_abs_delta"),
+        # signed, so a put reads -0.30 rather than 0.30 — the number the band
+        # was actually searched with, not its magnitude
+        delta_at_entry=opt.get("_delta"),
         contracts=contracts,
         tp_pct=tp_pct,
         sl_pct=sl_pct,
@@ -330,7 +358,7 @@ def open_position(
               f"budget, +/-{tolerance_pct:g}%)"),
         raw={"buy_order": order, "picked": {
             "bid": opt.get("bid"), "ask": opt.get("ask"),
-            "delta": opt.get("_abs_delta"),
+            "delta": opt.get("_delta"),
         }, "sizing": sizing},
     )
     db.add(pos)

@@ -401,6 +401,9 @@ def chain_preview(
         # Walk out until the band has something. The nearest expiry is often
         # 0DTE, whose deltas sit near 0 or 1 — a mid-band request against it
         # comes back empty most of the afternoon.
+        # The preview must search the same SIGNED band the buy will, or it
+        # shows a shortlist the executor would not have picked from.
+        lo, hi = tradier_bot.delta_band(side, delta_min, delta_max)
         tried: list[str] = []
         for exp in candidates:
             raw = client.chain(sym, exp)
@@ -410,11 +413,12 @@ def chain_preview(
                 d = g.get("delta")
                 if d is None or (o.get("option_type") or "").lower() != side:
                     continue
-                if delta_min <= abs(float(d)) <= delta_max:
+                if lo <= float(d) <= hi:
                     band.append({
                         "occ_symbol": o.get("symbol"), "strike": o.get("strike"),
                         "bid": o.get("bid"), "ask": o.get("ask"),
-                        "delta": round(abs(float(d)), 4),
+                        # signed, as quoted — a put reads -0.30
+                        "delta": round(float(d), 4),
                         "volume": o.get("volume"),
                         "open_interest": o.get("open_interest"),
                     })
@@ -423,8 +427,11 @@ def chain_preview(
             if band or pick or exp == candidates[-1]:
                 return {
                     "symbol": sym, "expiration": exp, "side": side,
-                    "band": sorted(band, key=lambda x: x["delta"], reverse=True),
+                    # deepest-in-the-money first for both sides: sorting on
+                    # the signed value would stand the put list on its head
+                    "band": sorted(band, key=lambda x: abs(x["delta"]), reverse=True),
                     "pick": (pick or {}).get("symbol"),
+                    "delta_band": [lo, hi],
                     "tried": tried,
                 }
     except TradierError as exc:

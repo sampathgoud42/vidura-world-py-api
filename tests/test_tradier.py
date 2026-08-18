@@ -210,9 +210,52 @@ def test_pick_prefers_mid_band_and_needs_two_sided_quote():
     assert symbols == [None]
 
 
-def test_pick_uses_abs_delta_for_puts():
+def test_a_spoken_band_becomes_a_signed_one():
+    """0.25-0.45 is a magnitude; the search is signed by side (user 08/17)."""
+    assert tradier_bot.delta_band("call", 0.25, 0.45) == (0.25, 0.45)
+    assert tradier_bot.delta_band("put", 0.25, 0.45) == (-0.45, -0.25)
+    # typed the other way round, it still means the same band
+    assert tradier_bot.delta_band("put", 0.45, 0.25) == (-0.45, -0.25)
+
+
+def test_puts_are_picked_from_the_negative_band():
     pick = tradier_bot.pick_contract(_chain(), "put", 0.25, 0.50)
-    assert pick["symbol"] == "SPY_P630"          # raw delta -0.37
+    assert pick["symbol"] == "SPY_P630"          # delta -0.37, inside -0.50..-0.25
+    # the sign is carried through, not flattened: a put's entry delta is
+    # negative, which is the number its band was searched with
+    assert pick["_delta"] == -0.37
+    assert pick["_abs_delta"] == 0.37
+
+
+def test_a_put_quoted_with_a_positive_delta_is_not_picked():
+    """The sign is a real filter, not decoration.
+
+    A put whose delta comes back positive is bad data — a vendor that dropped
+    the sign, or a call's greeks on a put row. Matching on |delta| would take
+    it and record a position whose risk is the opposite of what was asked for.
+    """
+    chain = [{"symbol": "SPY_P610", "option_type": "put", "strike": 610,
+              "bid": 0.40, "ask": 0.42, "greeks": {"delta": 0.37}}]
+    assert tradier_bot.pick_contract(chain, "put", 0.25, 0.50) is None
+
+
+def test_a_call_quoted_with_a_negative_delta_is_not_picked():
+    chain = [{"symbol": "SPY_C660", "option_type": "call", "strike": 660,
+              "bid": 0.40, "ask": 0.42, "greeks": {"delta": -0.37}}]
+    assert tradier_bot.pick_contract(chain, "call", 0.25, 0.50) is None
+
+
+def test_the_put_mid_target_is_the_signed_mid():
+    """Nearest-to-mid must be measured in the band the side actually uses.
+
+    Band 0.25-0.45 on a put is -0.45..-0.25, mid -0.35: the -0.34 contract
+    wins. Scoring against the positive mid would rank the two by |d - 0.35|
+    on negative numbers and pick the far edge instead.
+    """
+    q = lambda sym, d: {"symbol": sym, "option_type": "put", "strike": 600,  # noqa: E731
+                        "bid": 0.40, "ask": 0.42, "greeks": {"delta": d}}
+    chain = [q("SPY_P_EDGE", -0.26), q("SPY_P_MID", -0.34)]
+    assert tradier_bot.pick_contract(chain, "put", 0.25, 0.45)["symbol"] == "SPY_P_MID"
 
 
 # ── lifecycle ───────────────────────────────────────────────────────────────
