@@ -205,7 +205,13 @@ class Settings(BaseSettings):
     tradier_hot_min_pdi: float = 25.0
     tradier_hot_di_ratio: float = 2.0
     tradier_hot_min_adx: float = 34.0
-    tradier_hot_ttl_s: int = 300          # snapshot age before a refresh
+    # A sweep is 100 timesales calls, so it runs on a timer rather than on
+    # every look: once a snapshot is this old the next request kicks a fresh
+    # one off in the background. The desk's own poll is the heartbeat that
+    # makes that happen on schedule — it must stay well UNDER this number, or
+    # a sweep only starts on the first poll after the snapshot went stale and
+    # the data ends up nearly twice this age (user 08/17).
+    tradier_hot_ttl_s: int = 900          # 15 minutes
 
     # --- exits -----------------------------------------------------------
     # A buy reporting "filled" is not the same as the position being on the
