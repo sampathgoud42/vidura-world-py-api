@@ -131,3 +131,27 @@ def test_the_port_matches_the_chart_on_a_worked_series():
     assert r["plus_di"] == pytest.approx(36.8921, abs=1e-4)
     assert r["minus_di"] == pytest.approx(4.1768, abs=1e-4)
     assert r["adx"] == pytest.approx(69.4948, abs=1e-4)
+
+
+# ── granularity ─────────────────────────────────────────────────────────────
+
+def test_every_offered_interval_has_its_own_lookback():
+    """A coarser bar needs a longer window to reach the same bar count.
+
+    Measured against the live venue: 5min/5d gives 248 regular-session bars,
+    15min/10d 166, 30min/20d 198, 1h/40d 197. Ask for 5 days of hourly and
+    the ADX comes back built mostly from its own seed.
+    """
+    days = {iv: hot_scan.days_for(iv) for iv in hot_scan.INTERVALS}
+    assert days == {"5min": 5, "15min": 10, "30min": 20, "1h": 40}
+    # a coarser bar never gets a shorter window than a finer one
+    assert sorted(days.values()) == list(days.values())
+
+
+def test_the_desk_default_is_five_minute_bars():
+    assert get_settings().tradier_hot_interval == "5min"
+    assert hot_scan.INTERVALS[0] == "5min"
+
+
+def test_an_unknown_interval_falls_back_rather_than_crashing():
+    assert hot_scan.days_for("nonsense") == 5

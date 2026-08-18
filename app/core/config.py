@@ -192,8 +192,13 @@ class Settings(BaseSettings):
         "CVS,ELV,ISRG,SYK,VRTX,REGN,CVX,COP,SLB,EOG,"
         "NEE,DUK,UNP,HON,RTX,LMT,DE,GEV,ANET,PANW"
     )
-    tradier_hot_interval: str = "15min"   # same bars the charts default to
-    tradier_hot_days: int = 5             # sessions of history per name
+    tradier_hot_interval: str = "5min"    # the desk's default granularity
+    # Lookback per interval, tuned so every choice lands on 150-250 regular
+    # session bars. The DMI needs 30 to say anything at all, and near that
+    # floor the ADX is mostly its own seed — measured against the live venue,
+    # where 5min/5d gives 248 RTH bars, 15min/10d 166, 30min/20d 198 and
+    # 1h/40d 197. Tradier serves all four natively; none is resampled.
+    tradier_hot_days_by_interval: str = "5min:5,15min:10,30min:20,1h:40"
     # The gates, as the desk stated them: a substantial up-move (+DI > 25)
     # that dominates rather than merely leads (+DI >= -DI x 2), inside a real
     # trend (ADX > 34 — well past Wilder's 20-25 "a trend exists" line).

@@ -263,8 +263,13 @@ def hot_scan(
     user_id: str = Query(...),
     live: bool = Query(default=False,
                        description="true reads bars from the PRODUCTION venue"),
-    interval: str | None = Query(default=None, pattern="^(1min|5min|15min)$",
-                                 description="bar size the DMI is computed on"),
+    interval: str | None = Query(
+        default=None, pattern="^(5min|15min|30min|1h)$",
+        description="bar size the DMI is computed on. All four are served "
+                    "natively by Tradier — none is resampled — and each "
+                    "carries its own lookback so every choice lands on a "
+                    "comparable number of bars.",
+        examples=["5min"]),
     refresh: bool = Query(default=False, description="force a sweep now"),
     db: Session = Depends(get_db),
 ) -> dict:

@@ -46,6 +46,12 @@ _REFRESHING: set[str] = set()
 _LOCK = threading.Lock()
 
 
+# What the desk may ask for, in the vendor's own spelling. All four are served
+# natively by /markets/timesales — nothing here is resampled from finer bars,
+# which would invent a bar boundary the charts do not share.
+INTERVALS = ("5min", "15min", "30min", "1h")
+
+
 def _today() -> str:
     return f"{datetime.now(CST):%Y-%m-%d}"
 
@@ -53,6 +59,25 @@ def _today() -> str:
 def universe() -> list[str]:
     s = get_settings()
     return [t.strip().upper() for t in s.tradier_hot_universe.split(",") if t.strip()]
+
+
+def days_for(interval: str) -> int:
+    """Lookback for this granularity.
+
+    A coarser bar needs a longer window to reach the same count: 40 days of
+    hourly bars is the same 200-ish readings as 5 days of 5-minute ones. Ask
+    for 5 days of hourly and the ADX comes back built mostly from its seed.
+    """
+    s = get_settings()
+    table = {}
+    for part in s.tradier_hot_days_by_interval.split(","):
+        if ":" in part:
+            key, _, val = part.partition(":")
+            try:
+                table[key.strip()] = int(val)
+            except ValueError:
+                continue
+    return table.get(interval, 5)
 
 
 # ── Wilder DMI/ADX ──────────────────────────────────────────────────────────
@@ -198,13 +223,14 @@ def _refresh(user, live: bool, interval: str) -> dict:
 
     s = get_settings()
     syms = universe()
+    days = days_for(interval)
     started = time.time()
     client = client_for(user, live=live)
     rows: list[dict] = []
     try:
         with ThreadPoolExecutor(max_workers=s.tradier_flow_workers) as pool:
             for got in pool.map(
-                lambda sym: _scan_symbol(client, sym, interval, s.tradier_hot_days),
+                lambda sym: _scan_symbol(client, sym, interval, days),
                 syms,
             ):
                 if got is not None:
@@ -223,6 +249,7 @@ def _refresh(user, live: bool, interval: str) -> dict:
         "meta": {
             "day": _today(),
             "interval": interval,
+            "days": days,
             "scanned": len(syms),
             "with_readings": len(rows),
             "hot": len(hot),
