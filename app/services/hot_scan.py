@@ -1,14 +1,19 @@
-"""HOT: which of the large caps are in a strong, one-sided uptrend right now.
+"""HOT: which of the large caps are in a strong, one-sided trend right now.
 
 The desk question this answers: of the top-100 names, which ones is the
-directional-movement system saying are TRENDING UP hard enough to be worth a
-call — not merely drifting up, and not chopping.
+directional-movement system saying are TRENDING hard enough to be worth an
+option — not merely drifting, and not chopping — and which way.
 
-Three gates, all on Wilder's 14-period DMI/ADX (user 08/17):
+Three gates, all on Wilder's 14-period DMI/ADX, read in both directions
+(user 08/17):
 
-    +DI  >  25          the up-move is substantial in its own right
-    +DI >= -DI x 2      and it dominates the down-move, not just leads it
-    ADX  >  34          and the whole thing is a trend, not a range
+    CALL    +DI  >  25   and  +DI >= -DI x 2   and  ADX > 34
+    PUT     -DI  >  25   and  -DI >= +DI x 2   and  ADX > 34
+
+Symmetric because the system is: DMI measures up-moves and down-moves the
+same way, so a name whose -DI dominates is exactly as tradable as one whose
++DI does, in the opposite direction. Both sides can never pass at once —
+each demands its own DI be at least twice the other.
 
 The middle one is the interesting gate. +DI above -DI is a crossover, which
 happens constantly and reverses just as often; TWICE -DI is a different claim
@@ -158,13 +163,31 @@ def dmi(bars: list[dict], period: int = 14) -> dict | None:
     return {"plus_di": plus_di[-1], "minus_di": minus_di[-1], "adx": adx[-1]}
 
 
-def is_hot(reading: dict, s=None) -> bool:
-    """The three gates, in the order they are spoken."""
+def hot_side(reading: dict, s=None) -> str | None:
+    """'call', 'put', or None — the same three gates read in both directions.
+
+    The gates are symmetric because the system is: DMI measures up-moves and
+    down-moves the same way, so a name whose -DI dominates is exactly as
+    tradable as one whose +DI does, in the opposite direction. Up buys a call,
+    down buys a put (user 08/17).
+
+    Both can never pass at once: each demands its own DI be at least twice the
+    other, and that pair of claims has no solution.
+    """
     s = s or get_settings()
     pdi, mdi, adx = reading["plus_di"], reading["minus_di"], reading["adx"]
-    return (pdi > s.tradier_hot_min_pdi
-            and pdi >= mdi * s.tradier_hot_di_ratio
-            and adx > s.tradier_hot_min_adx)
+    if adx <= s.tradier_hot_min_adx:
+        return None
+    if pdi > s.tradier_hot_min_pdi and pdi >= mdi * s.tradier_hot_di_ratio:
+        return "call"
+    if mdi > s.tradier_hot_min_pdi and mdi >= pdi * s.tradier_hot_di_ratio:
+        return "put"
+    return None
+
+
+def is_hot(reading: dict, s=None) -> bool:
+    """Legacy call-side helper — the upside gates only."""
+    return hot_side(reading, s) == "call"
 
 
 # ── the sweep ───────────────────────────────────────────────────────────────
@@ -204,15 +227,22 @@ def _scan_symbol(client, symbol: str, interval: str, days: int) -> dict | None:
     if reading is None:
         return None
     last = bars[-1]
+    side = hot_side(reading)
+    pdi, mdi = reading["plus_di"], reading["minus_di"]
+    # How far past the ratio gate the WINNING side is — 2.0 is the threshold
+    # itself. Measured on the dominant DI either way, so a put's 5x means the
+    # same thing a call's 5x does: the other side is not answering.
+    if side == "put":
+        ratio = round(mdi / pdi, 2) if pdi > 0 else None
+    else:
+        ratio = round(pdi / mdi, 2) if mdi > 0 else None
     return {
         "symbol": symbol,
-        "plus_di": round(reading["plus_di"], 2),
-        "minus_di": round(reading["minus_di"], 2),
+        "side": side,                       # call | put | None
+        "plus_di": round(pdi, 2),
+        "minus_di": round(mdi, 2),
         "adx": round(reading["adx"], 2),
-        # how far past the ratio gate it is — 2.0 is the threshold itself, so
-        # this ranks "buyers unanswered" rather than ranking raw +DI
-        "di_ratio": round(reading["plus_di"] / reading["minus_di"], 2)
-        if reading["minus_di"] > 0 else None,
+        "di_ratio": ratio,
         "last": last.get("close"),
         "bars": len(bars),
     }
@@ -238,11 +268,10 @@ def _refresh(user, live: bool, interval: str) -> dict:
     finally:
         client.close()
 
-    hot = [r for r in rows if is_hot({"plus_di": r["plus_di"],
-                                      "minus_di": r["minus_di"],
-                                      "adx": r["adx"]}, s)]
+    hot = [r for r in rows if r["side"] is not None]
     # strongest trend first; the ratio breaks ties, since two names at ADX 40
-    # are not equally one-sided
+    # are not equally one-sided. Calls and puts rank together on purpose — a
+    # strong downtrend is as tradable as a strong uptrend, just the other way.
     hot.sort(key=lambda r: (r["adx"], r["di_ratio"] or 0), reverse=True)
     return {
         "rows": hot,
@@ -253,8 +282,10 @@ def _refresh(user, live: bool, interval: str) -> dict:
             "scanned": len(syms),
             "with_readings": len(rows),
             "hot": len(hot),
+            "calls": sum(1 for r in hot if r["side"] == "call"),
+            "puts": sum(1 for r in hot if r["side"] == "put"),
             "gates": {
-                "min_plus_di": s.tradier_hot_min_pdi,
+                "min_di": s.tradier_hot_min_pdi,
                 "di_ratio": s.tradier_hot_di_ratio,
                 "min_adx": s.tradier_hot_min_adx,
             },

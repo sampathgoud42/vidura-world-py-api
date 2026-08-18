@@ -133,6 +133,44 @@ def test_the_port_matches_the_chart_on_a_worked_series():
     assert r["adx"] == pytest.approx(69.4948, abs=1e-4)
 
 
+# ── both directions ─────────────────────────────────────────────────────────
+
+def test_the_gates_read_the_same_way_down_as_up():
+    """DMI measures up-moves and down-moves identically, so a name whose -DI
+    dominates is as tradable as one whose +DI does — the other way."""
+    assert hot_scan.hot_side({"plus_di": 45, "minus_di": 10, "adx": 40}) == "call"
+    assert hot_scan.hot_side({"plus_di": 10, "minus_di": 45, "adx": 40}) == "put"
+
+
+def test_a_downtrend_inside_a_range_is_still_nothing():
+    assert hot_scan.hot_side({"plus_di": 10, "minus_di": 45, "adx": 34}) is None
+
+
+def test_a_weak_or_merely_leading_minus_di_is_not_a_put():
+    assert hot_scan.hot_side({"plus_di": 5, "minus_di": 24, "adx": 40}) is None    # -DI < 25
+    assert hot_scan.hot_side({"plus_di": 16, "minus_di": 30, "adx": 40}) is None   # 1.88x
+    assert hot_scan.hot_side({"plus_di": 16, "minus_di": 32, "adx": 40}) == "put"  # 2.00x
+
+
+def test_a_name_can_never_be_both_sides_at_once():
+    """Each side demands its own DI be at least twice the other, and that pair
+    of claims has no solution — so the buy direction is never ambiguous."""
+    for pdi in range(0, 101, 5):
+        for mdi in range(0, 101, 5):
+            side = hot_scan.hot_side({"plus_di": pdi, "minus_di": mdi, "adx": 50})
+            if side == "call":
+                assert pdi >= mdi * 2 and pdi > 25
+            elif side == "put":
+                assert mdi >= pdi * 2 and mdi > 25
+
+
+def test_is_hot_still_means_the_call_side():
+    """The older helper keeps its meaning; a downtrend must not start
+    reporting True to anything that still calls it."""
+    assert hot_scan.is_hot({"plus_di": 45, "minus_di": 10, "adx": 40})
+    assert not hot_scan.is_hot({"plus_di": 10, "minus_di": 45, "adx": 40})
+
+
 # ── granularity ─────────────────────────────────────────────────────────────
 
 def test_every_offered_interval_has_its_own_lookback():
