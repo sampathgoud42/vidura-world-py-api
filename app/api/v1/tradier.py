@@ -12,6 +12,7 @@ cannot reach live money by construction.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,8 @@ from app.services import tradier_bot
 from app.services.tradier_client import TradierError
 
 router = APIRouter(prefix="/tradier", tags=["tradier"])
+
+logger = logging.getLogger(__name__)
 
 CST = ZoneInfo("America/Chicago")
 
@@ -121,16 +124,44 @@ def _tradier_quote_out(q: dict) -> dict:
     }
 
 
-# The index strip. Tradier quotes SPX and VIX as indices directly, but has no
-# symbol for the Dow itself (DJI is unmatched) — DIA, the SPDR Dow ETF, is the
-# tradable proxy, labelled DOW so the strip reads the way an operator expects.
+# The index strip, in the order the desk reads it (user 08/18).
+#
+# Tradier quotes SPX and VIX as indices directly, but has no symbol for the Dow
+# itself (DJI is unmatched) — DIA, the SPDR Dow ETF, is the tradable proxy,
+# labelled DOW so the strip reads the way an operator expects.
+#
+# BTC is not a Tradier instrument at all: the market socket carries equities
+# and indices, so nothing here can make it tick. It rides along as a polled
+# quote instead — real BTC-USD from the keyless quotes service, not an ETF
+# wearing bitcoin's name — and is flagged so the browser knows to refresh it
+# itself rather than wait for a tick that will never come.
 STREAM_SYMBOLS = [
-    {"label": "SPX", "symbol": "SPX"},
-    {"label": "SPY", "symbol": "SPY"},
-    {"label": "DOW", "symbol": "DIA"},
     {"label": "QQQ", "symbol": "QQQ"},
+    {"label": "SPY", "symbol": "SPY"},
+    {"label": "SPX", "symbol": "SPX"},
     {"label": "VIX", "symbol": "VIX"},
+    {"label": "DOW", "symbol": "DIA"},
+    {"label": "BTC", "symbol": "BTC", "stream": False},
 ]
+
+STREAMED = [s for s in STREAM_SYMBOLS if s.get("stream", True)]
+POLLED = [s for s in STREAM_SYMBOLS if not s.get("stream", True)]
+
+
+def _polled_seed(entry: dict) -> dict:
+    """A strip entry Tradier cannot stream, priced from the quotes service."""
+    from app.services import quotes as quotes_svc
+
+    out = {**entry}
+    try:
+        q = quotes_svc.quote_for(entry["symbol"])
+        out.update({"price": q.get("price"), "prev_close": q.get("prev_close"),
+                    "change_pct": q.get("change_pct"), "source": "quotes"})
+    except Exception as exc:                          # noqa: BLE001
+        # A strip entry is not worth failing the whole session over — it
+        # simply shows a dash until the browser's own poll fills it.
+        logger.info("strip quote for %s unavailable: %s", entry["symbol"], exc)
+    return out
 
 
 @router.post("/stream/session", operation_id="createTradierStreamSession")
@@ -154,22 +185,28 @@ def stream_session(user_id: str = Query(...), db: Session = Depends(get_db)) -> 
         raise _translated(exc) from exc
     try:
         data = client.market_session()
+        # Seeded in STREAM_SYMBOLS order — the strip renders in the order it
+        # is handed, so this list is the single place that order is decided.
         seed = []
         try:
-            wanted = [s["symbol"] for s in STREAM_SYMBOLS]
             by_symbol = {(q.get("symbol") or "").upper(): q
-                         for q in client.quotes(wanted)}
-            for s in STREAM_SYMBOLS:
+                         for q in client.quotes([s["symbol"] for s in STREAMED])}
+        except TradierError:
+            by_symbol = {}
+        for s in STREAM_SYMBOLS:
+            if s.get("stream", True):
                 q = by_symbol.get(s["symbol"])
                 seed.append({**s, **(_tradier_quote_out(q) if q else {}),
                              "symbol": s["symbol"], "label": s["label"]})
-        except TradierError:
-            seed = [dict(s) for s in STREAM_SYMBOLS]
+            else:
+                seed.append(_polled_seed(s))
         return {
             "sessionid": data.get("sessionid"),
             "url": data.get("url"),
             "ws_url": "wss://ws.tradier.com/v1/markets/events",
-            "symbols": STREAM_SYMBOLS,
+            # only what the socket should be asked to subscribe to
+            "symbols": STREAMED,
+            "polled": [s["symbol"] for s in POLLED],
             "seed": seed,
             "venue": "live",
         }
