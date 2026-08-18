@@ -258,6 +258,34 @@ def timesales(
         client.close()
 
 
+@router.get("/hot", operation_id="getTradierHotScan")
+def hot_scan(
+    user_id: str = Query(...),
+    live: bool = Query(default=False,
+                       description="true reads bars from the PRODUCTION venue"),
+    interval: str | None = Query(default=None, pattern="^(1min|5min|15min)$",
+                                 description="bar size the DMI is computed on"),
+    refresh: bool = Query(default=False, description="force a sweep now"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Top-100 names in a strong one-sided uptrend, by Wilder DMI/ADX.
+
+    The gates: +DI above 25, +DI at least twice -DI, ADX above 34. The middle
+    one is the point — a +DI/-DI crossover happens constantly and reverses
+    just as often, while TWICE -DI says the buyers are not being answered.
+
+    Returns the last good snapshot immediately and refreshes in the background
+    when stale; a 100-name bar sweep must never sit in front of the render.
+    """
+    from app.services import hot_scan as hot_svc
+
+    user = _user_or_404(db, user_id)
+    try:
+        return hot_svc.snapshot(user, live=live, interval=interval, force=refresh)
+    except Exception as exc:                          # noqa: BLE001
+        raise _translated(exc) from exc
+
+
 @router.get("/flow", operation_id="getTradierOptionsFlow")
 def options_flow(
     user_id: str = Query(...),

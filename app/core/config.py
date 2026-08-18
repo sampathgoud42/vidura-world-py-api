@@ -177,6 +177,31 @@ class Settings(BaseSettings):
     # this, a contract is a lottery ticket, not flow worth acting on.
     tradier_flow_min_price: float = 0.30
 
+    # --- HOT scan (trend strength across the top 100) --------------------
+    # Wilder DMI/ADX over the same bars the desk charts draw, so a name that
+    # is HOT here shows the matching B marker on its own chart.
+    tradier_hot_universe: str = (
+        "AAPL,MSFT,NVDA,AMZN,GOOGL,META,TSLA,AVGO,LLY,JPM,"
+        "V,UNH,XOM,MA,COST,HD,PG,JNJ,ABBV,WMT,"
+        "NFLX,BAC,CRM,AMD,KO,PEP,TMO,ADBE,CSCO,MRK,"
+        "ORCL,ACN,MCD,ABT,DIS,QCOM,INTC,VZ,TXN,IBM,"
+        "PFE,GE,CAT,NOW,UBER,BA,MU,PLTR,COIN,SMCI,"
+        "GS,MS,BLK,SCHW,AXP,C,WFC,SPGI,BX,PGR,"
+        "AMAT,LRCX,KLAC,ADI,SNPS,CDNS,MRVL,ARM,DELL,TMUS,"
+        "CMCSA,T,LOW,TGT,NKE,SBUX,MDLZ,AMGN,GILD,BMY,"
+        "CVS,ELV,ISRG,SYK,VRTX,REGN,CVX,COP,SLB,EOG,"
+        "NEE,DUK,UNP,HON,RTX,LMT,DE,GEV,ANET,PANW"
+    )
+    tradier_hot_interval: str = "15min"   # same bars the charts default to
+    tradier_hot_days: int = 5             # sessions of history per name
+    # The gates, as the desk stated them: a substantial up-move (+DI > 25)
+    # that dominates rather than merely leads (+DI >= -DI x 2), inside a real
+    # trend (ADX > 34 — well past Wilder's 20-25 "a trend exists" line).
+    tradier_hot_min_pdi: float = 25.0
+    tradier_hot_di_ratio: float = 2.0
+    tradier_hot_min_adx: float = 34.0
+    tradier_hot_ttl_s: int = 300          # snapshot age before a refresh
+
     # --- exits -----------------------------------------------------------
     # A buy reporting "filled" is not the same as the position being on the
     # books. Selling into that gap is what Tradier rejects, so the exits wait
